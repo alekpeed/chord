@@ -2,7 +2,7 @@
 
 Every published chord-annotation set — Isophonics, Billboard, JAAH — uses Harte notation:
 ``C:maj7``, ``G:7/3``, ``F#:min``, ``N`` for no chord. This module turns that into the same
-vocabulary the Android app recognises, so a model trained here produces labels the app can
+vocabulary the Android app recognizes, so a model trained here produces labels the app can
 already display and store.
 
 Kept dependency-free on purpose: it is the piece most likely to be wrong, and it should be

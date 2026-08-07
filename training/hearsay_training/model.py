@@ -20,7 +20,7 @@ from .dataset import N_BINS
 from .harte import NUM_CLASSES
 
 
-class ChordRecogniser(nn.Module):
+class ChordRecognizer(nn.Module):
     def __init__(
         self,
         num_classes: int = NUM_CLASSES,

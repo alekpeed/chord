@@ -313,7 +313,7 @@ object KeyEstimator {
      * Pearson correlation, not a raw dot product.
      *
      * Subtracting the means is what separates a key from its relative minor: the two profiles share
-     * almost all their energy and differ mostly in *shape*, which an uncentred dot product cannot
+     * almost all their energy and differ mostly in *shape*, which an uncentered dot product cannot
      * see. Krumhansl and Schmuckler specified correlation for exactly this reason.
      */
     private fun pearson(observed: FloatArray, profile: FloatArray): Float {

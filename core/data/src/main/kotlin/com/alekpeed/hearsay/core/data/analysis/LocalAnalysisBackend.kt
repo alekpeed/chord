@@ -136,9 +136,9 @@ class LocalAnalysisBackend @Inject constructor(
 
             onStage(StageType.FINALIZE, StageStatus.RUNNING, 0f, null)
             if (result.chart.chordEvents.isEmpty()) {
-                onStage(StageType.FINALIZE, StageStatus.FAILED, 0f, "Nothing recognisable was found")
+                onStage(StageType.FINALIZE, StageStatus.FAILED, 0f, "Nothing recognizable was found")
                 return@withContext fail(
-                    AnalysisFailure.Unknown("No harmony could be recognised in this recording"),
+                    AnalysisFailure.Unknown("No harmony could be recognized in this recording"),
                 )
             }
 

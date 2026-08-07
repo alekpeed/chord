@@ -28,7 +28,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
 /**
- * The behaviour these tests exist for: a correction must never destroy what the analysis said.
+ * The behavior these tests exist for: a correction must never destroy what the analysis said.
  */
 @RunWith(RobolectricTestRunner::class)
 class RoomChartRepositoryTest {

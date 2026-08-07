@@ -32,9 +32,9 @@ Before a model is merged:
 5. Memory and runtime benchmarked on a target device, recorded, not estimated.
 6. Fallback defined for when it is unavailable, out of memory, or its execution provider is
    unsupported.
-7. Quality classified. `PREVIEW` and `EXPERIMENTAL` outputs are labelled as such wherever a user sees
+7. Quality classified. `PREVIEW` and `EXPERIMENTAL` outputs are labeled as such wherever a user sees
    them.
-8. Cancellation verified: a cancelled inference leaves the project recoverable.
+8. Cancellation verified: a canceled inference leaves the project recoverable.
 
 ## Evaluation
 
@@ -54,6 +54,6 @@ checksum-verified, with a storage estimate shown before download and removal ava
 
 ## Device tiers
 
-Capability is classified from measured behaviour rather than model name: `BASIC` (playback and
+Capability is classified from measured behavior rather than model name: `BASIC` (playback and
 precomputed projects only), `STANDARD` (fast local analysis), `HIGH` (balanced), `ADVANCED` (maximum
 quality). Users can override the recommendation.

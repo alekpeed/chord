@@ -15,7 +15,7 @@ screen says so.
 
 Instead, `ManualChart.blankGrid` is exposed as a user action: "lay out bars" asks for a tempo and a
 meter, writes a beat grid and one empty chord region per bar, and the user types the changes in. Every
-event it writes is attributed to `AnalysisSource.USER` and the revision is labelled as the user's.
+event it writes is attributed to `AnalysisSource.USER` and the revision is labeled as the user's.
 `ManualChart.twelveBarBlues` exists for tests and demos and marks its events `AnalysisSource.SEED`.
 
 ## Consequences

@@ -26,7 +26,7 @@ python3 evaluate.py --features data/features --checkpoint models/best.pt
 Then export it for the app:
 
 ```bash
-python3 export_onnx.py --checkpoint models/best.pt --out models/chord-recogniser.onnx
+python3 export_onnx.py --checkpoint models/best.pt --out models/chord-recognizer.onnx
 ```
 
 ## What each step does
@@ -71,7 +71,7 @@ costs almost nothing.
 ## What "good" looks like
 
 Published systems of this kind reach roughly **80–85%** on major/minor chords across a test set.
-The signal-processing recogniser currently in the app typically lands around **60–70%** on that
+The signal-processing recognizer currently in the app typically lands around **60–70%** on that
 measure — though nobody has measured it on real music yet, which is what `evaluate.py` is for.
 
 Exact-chord accuracy over the full vocabulary (sevenths, sixths, suspensions) is always lower,

@@ -34,7 +34,7 @@ enum class AnalysisStageId(val displayName: String, val weight: Float) {
     SPECTRUM("Reading the spectrum", 0.20f),
     SEPARATING("Separating harmony from percussion", 0.25f),
     RHYTHM("Finding the beat", 0.15f),
-    HARMONY("Recognising chords", 0.20f),
+    HARMONY("Recognizing chords", 0.20f),
     STRUCTURE("Mapping the form", 0.10f),
     FINALIZING("Finishing up", 0.05f),
 }

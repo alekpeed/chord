@@ -149,7 +149,7 @@ class ExerciseGeneratorTest {
         )
         val answers = exercises.map { it.correctAnswer }.toSet()
         assertTrue(
-            "Expected recognisable quality names, got $answers",
+            "Expected recognizable quality names, got $answers",
             answers.all { it in setOf("Minor seventh", "Dominant seventh", "Major seventh", "Half-diminished") },
         )
     }

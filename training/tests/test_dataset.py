@@ -2,7 +2,7 @@
 
 Needs only numpy. Frame alignment is the highest-risk code in the pipeline: an off-by-one here
 trains the model on chords that are consistently early or late, and nothing would ever fail —
-the loss would just plateau somewhere mediocre and look like a modelling problem.
+the loss would just plateau somewhere mediocre and look like a modeling problem.
 """
 
 from __future__ import annotations
@@ -130,16 +130,16 @@ class PitchShiftTest(unittest.TestCase):
 
 
 class AudioMatchingTest(unittest.TestCase):
-    def test_normalisation_ignores_track_numbers_and_punctuation(self):
+    def test_normalization_ignores_track_numbers_and_punctuation(self):
         self.assertEqual(
-            dataset.normalise_title("01 - A Hard Day's Night"),
-            dataset.normalise_title("a_hard_days_night"),
+            dataset.normalize_title("01 - A Hard Day's Night"),
+            dataset.normalize_title("a_hard_days_night"),
         )
 
     def test_matches_a_library_file_to_an_annotation(self):
         index = {
-            dataset.normalise_title("Norwegian Wood"): Path("/music/norwegian.flac"),
-            dataset.normalise_title("Michelle"): Path("/music/michelle.flac"),
+            dataset.normalize_title("Norwegian Wood"): Path("/music/norwegian.flac"),
+            dataset.normalize_title("Michelle"): Path("/music/michelle.flac"),
         }
         self.assertEqual(
             Path("/music/norwegian.flac"),
@@ -148,7 +148,7 @@ class AudioMatchingTest(unittest.TestCase):
 
     def test_reports_nothing_when_the_recording_is_not_owned(self):
         # The honest outcome: the song is listed as missing rather than matched to the wrong file.
-        index = {dataset.normalise_title("Michelle"): Path("/music/michelle.flac")}
+        index = {dataset.normalize_title("Michelle"): Path("/music/michelle.flac")}
         self.assertIsNone(dataset.match_audio("Taxman", index))
 
 

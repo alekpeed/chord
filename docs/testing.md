@@ -20,7 +20,7 @@ the runner has no KVM, so an emulator would be unusably slow. They are written a
 **Nothing device-dependent has been verified on hardware yet.** Specifically: real Storage Access
 Framework permission grants and their revocation, audio decoding of each supported container,
 background playback with the screen off, notification and lock-screen transport controls, and
-behaviour across a process death while playing. All of it is written; none of it is proven.
+behavior across a process death while playing. All of it is written; none of it is proven.
 
 **There are no golden audio fixtures yet.** They belong with the analysis pipeline in Milestone 4,
 along with the evaluation metrics — weighted chord-symbol recall, root and quality accuracy,
@@ -29,10 +29,10 @@ impressions, so that harness has to exist before any model is integrated.
 
 ## Conventions
 
-Test names are sentences describing the behaviour, not the method under test:
+Test names are sentences describing the behavior, not the method under test:
 `` `a chord region is half open at its end` ``, not `testChordAt`.
 
-Tests assert on behaviour a user could notice. Where a test needs a reason to exist that is not
+Tests assert on behavior a user could notice. Where a test needs a reason to exist that is not
 obvious from its name — why a boundary is half-open, why a dash means a flat sign and not minor — the
 reason goes in a comment, because that is the part a future reader will otherwise get wrong.
 

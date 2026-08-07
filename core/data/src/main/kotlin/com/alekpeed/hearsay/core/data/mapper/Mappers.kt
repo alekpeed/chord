@@ -30,7 +30,7 @@ import com.alekpeed.hearsay.core.model.timeline.TempoSegment
 
 /**
  * Reads an enum stored by name. Names rather than ordinals are used throughout so that reordering a
- * Kotlin enum can never silently reinterpret a user's saved data, and an unrecognised value falls
+ * Kotlin enum can never silently reinterpret a user's saved data, and an unrecognized value falls
  * back instead of crashing a library that a newer version of the app wrote.
  */
 private inline fun <reified T : Enum<T>> String.toEnumOr(fallback: T): T =

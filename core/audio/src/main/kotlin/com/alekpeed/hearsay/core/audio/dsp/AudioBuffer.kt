@@ -5,11 +5,11 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Decoded audio, normalised to what the analysis expects.
+ * Decoded audio, normalized to what the analysis expects.
  *
  * Analysis runs on mono at a reduced sample rate — harmony lives well below 11 kHz, and every
  * halving of the rate is a halving of every FFT that follows. The stereo image is kept separately
- * where it is useful, because the difference between the channels is what lets centred vocals be
+ * where it is useful, because the difference between the channels is what lets centered vocals be
  * pushed down before chord detection.
  */
 class AudioBuffer(
@@ -44,9 +44,9 @@ class AudioBuffer(
         }
 
         /**
-         * Mid-side reduction of whatever sits in the centre of the stereo image.
+         * Mid-side reduction of whatever sits in the center of the stereo image.
          *
-         * Lead vocals are almost always panned centre, so the channel difference is a cheap
+         * Lead vocals are almost always panned center, so the channel difference is a cheap
          * approximation of "everything except the singer". It is not source separation and is not
          * presented as such — it is a preprocessing step that measurably helps chord detection on
          * vocal-heavy mixes, and it does nothing at all to a mono recording.

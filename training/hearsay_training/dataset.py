@@ -39,7 +39,7 @@ BINS_PER_SEMITONE = BINS_PER_OCTAVE // 12
 
 @dataclass(frozen=True)
 class Annotation:
-    """One labelled span, in seconds."""
+    """One labeled span, in seconds."""
 
     start: float
     end: float
@@ -100,18 +100,18 @@ def read_jaah(path: Path) -> list[Annotation]:
 
 
 def labels_for_frames(annotations: list[Annotation], frame_count: int) -> np.ndarray:
-    """One class per frame, taking each frame's label from the span its centre falls in."""
+    """One class per frame, taking each frame's label from the span its center falls in."""
     labels = np.full(frame_count, harte.NO_CHORD_INDEX, dtype=np.int64)
     if not annotations:
         return labels
 
-    centres = (np.arange(frame_count) + 0.5) / FRAME_RATE
+    centers = (np.arange(frame_count) + 0.5) / FRAME_RATE
     starts = np.array([a.start for a in annotations])
     classes = np.array([a.class_index for a in annotations], dtype=np.int64)
     ends = np.array([a.end for a in annotations])
 
-    index = np.searchsorted(starts, centres, side="right") - 1
-    valid = (index >= 0) & (centres < ends[np.clip(index, 0, len(ends) - 1)])
+    index = np.searchsorted(starts, centers, side="right") - 1
+    valid = (index >= 0) & (centers < ends[np.clip(index, 0, len(ends) - 1)])
     labels[valid] = classes[index[valid]]
     return labels
 
@@ -162,10 +162,10 @@ def shift_labels(labels: np.ndarray, semitones: int) -> np.ndarray:
     return np.array([harte.transpose_class(int(c), semitones) for c in labels], dtype=np.int64)
 
 
-NORMALISE_PATTERN = re.compile(r"[^a-z0-9]+")
+NORMALIZE_PATTERN = re.compile(r"[^a-z0-9]+")
 
 
-def normalise_title(text: str) -> str:
+def normalize_title(text: str) -> str:
     """Loosens a filename enough to match an annotation to a music file.
 
     Track numbers, underscores, punctuation and case all differ between an annotation set and
@@ -174,26 +174,26 @@ def normalise_title(text: str) -> str:
     lowered = text.lower()
     lowered = re.sub(r"^\d+[\s\-_.]+", "", lowered)
     lowered = re.sub(r"\b(cd|disc)\s*\d+\b", "", lowered)
-    return NORMALISE_PATTERN.sub("", lowered)
+    return NORMALIZE_PATTERN.sub("", lowered)
 
 
 AUDIO_SUFFIXES = {".flac", ".wav", ".mp3", ".m4a", ".ogg", ".aiff", ".aif", ".wma", ".opus"}
 
 
 def index_audio_library(root: Path) -> dict[str, Path]:
-    """Maps every audio file under [root] by its normalised name."""
+    """Maps every audio file under [root] by its normalized name."""
     index: dict[str, Path] = {}
     for path in root.rglob("*"):
         if path.suffix.lower() not in AUDIO_SUFFIXES:
             continue
-        key = normalise_title(path.stem)
+        key = normalize_title(path.stem)
         index.setdefault(key, path)
     return index
 
 
 def match_audio(annotation_name: str, index: dict[str, Path]) -> Path | None:
     """Finds the recording an annotation describes, exactly or by containment."""
-    key = normalise_title(annotation_name)
+    key = normalize_title(annotation_name)
     if key in index:
         return index[key]
     for candidate_key, path in index.items():

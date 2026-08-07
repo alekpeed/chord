@@ -95,7 +95,7 @@ object BeatTracker {
         }
 
         // Start the backtrace from a strong beat near the end rather than the literal maximum,
-        // which is often a fade-out artefact.
+        // which is often a fade-out artifact.
         var endIndex = size - 1
         var bestEnd = Float.NEGATIVE_INFINITY
         val tail = (size * 0.9).toInt()
@@ -221,7 +221,7 @@ object DownbeatEstimator {
             }
             val bars = max(1, beatFrames.size / candidate)
             val others = max(1, beatFrames.size - bars)
-            // Contrast between bar lines and everything else, normalised by how many of each.
+            // Contrast between bar lines and everything else, normalized by how many of each.
             val contrast = onBar / bars - offBar / others
             // A mild preference for four breaks ties without overriding real evidence.
             val score = contrast * if (candidate == 4) 1.08f else 1f

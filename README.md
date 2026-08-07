@@ -26,7 +26,7 @@ If the link 404s, the build has not finished yet. `Actions → APK` shows what h
 
 ## Status
 
-**The app listens to a recording and produces a chord chart.** Import a file you own, press Analyse,
+**The app listens to a recording and produces a chord chart.** Import a file you own, press Analyze,
 and it works out the beat, the bar lines, the key, the sections and the chords — on device, with a
 confidence on every chord and the runners-up kept so you can disagree.
 
@@ -52,7 +52,7 @@ one, and it says how sure it is rather than presenting a guess as a fact.
 | Deep-learning stem separation (ten target stems) | Not started |
 | Note transcription, waveform editor, metronome | Not started |
 
-**Real-world accuracy is unmeasured.** The recogniser is proven against synthesized audio with known
+**Real-world accuracy is unmeasured.** The recognizer is proven against synthesized audio with known
 ground truth; nothing has been run against real recordings with published annotations, and nothing
 at all has run on a physical device. See `docs/testing.md`.
 
@@ -121,7 +121,7 @@ For local release builds, put `HEARSAY_KEYSTORE=/path/to/hearsay.jks` and the th
 :feature:library        the local library and import flow
 :feature:performance    the chord table, practice controls and correction
 :feature:processing     the analysis queue and its foreground service
-:feature:eartraining    exercises generated from analysed songs
+:feature:eartraining    exercises generated from analyzed songs
 ```
 
 `:core:model` and `:core:audio` are plain Kotlin modules with no Android dependency. That is a

@@ -216,9 +216,9 @@ private fun IdleState(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("Nothing is being analysed", style = MaterialTheme.typography.headlineSmall)
+            Text("Nothing is being analyzed", style = MaterialTheme.typography.headlineSmall)
             Text(
-                text = "Open a project and choose Analyse. Progress will appear here, and keeps " +
+                text = "Open a project and choose Analyze. Progress will appear here, and keeps " +
                     "running while you use the rest of the app.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -62,7 +62,7 @@ MANUAL = [
     ),
     (
         "RWC Popular Music",
-        "100 songs, audio included under a research licence",
+        "100 songs, audio included under a research license",
         "https://staff.aist.go.jp/m.goto/RWC-MDB/",
         "Audio is distributed on paid media for research use; annotations come from AIST.",
     ),

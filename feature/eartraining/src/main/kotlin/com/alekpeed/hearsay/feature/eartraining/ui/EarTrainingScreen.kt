@@ -96,7 +96,7 @@ private fun NotReadyState(state: EarTrainingUiState.NotReady, modifier: Modifier
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Nothing to practise yet", style = MaterialTheme.typography.headlineSmall)
+        Text("Nothing to practice yet", style = MaterialTheme.typography.headlineSmall)
         Text(
             text = state.reason,
             style = MaterialTheme.typography.bodyMedium,
@@ -144,7 +144,7 @@ private fun ReadyState(
             }
         }
 
-        Text("What to practise", style = MaterialTheme.typography.titleMedium)
+        Text("What to practice", style = MaterialTheme.typography.titleMedium)
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             ExerciseType.entries.chunked(2).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

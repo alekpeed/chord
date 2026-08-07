@@ -361,14 +361,14 @@ internal fun NoChartState(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { choosingProfile = true }, enabled = canAnalyze) {
-                Text(if (analysis == null) "Analyse this recording" else "Try again")
+                Text(if (analysis == null) "Analyze this recording" else "Try again")
             }
             OutlinedButton(onClick = onCreateManualChart) { Text("Lay out bars myself") }
         }
 
         if (!canAnalyze) {
             Text(
-                text = "The audio file has to be available before it can be analysed.",
+                text = "The audio file has to be available before it can be analyzed.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

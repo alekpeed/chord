@@ -37,7 +37,7 @@ class SourceStoreTest {
         assertTrue(copiedFile.exists())
         assertTrue(copiedFile.absolutePath.startsWith(File(context.filesDir, "sources").absolutePath))
         assertEquals(64, copiedFile.length())
-        // The extension is kept so the platform decoder can still recognise the container.
+        // The extension is kept so the platform decoder can still recognize the container.
         assertTrue(copiedFile.name.endsWith(".wav"))
     }
 

@@ -136,7 +136,7 @@ class EarTrainingViewModelTest {
     private fun viewModel() = EarTrainingViewModel(projects, charts, earTraining, playback, time)
 
     @Test
-    fun `a library with confident analysis is ready to practise`() = runTest {
+    fun `a library with confident analysis is ready to practice`() = runTest {
         viewModel().uiState.test {
             val ready = awaitState<EarTrainingUiState.Ready>()
             assertEquals(1, ready.eligibleProjects)

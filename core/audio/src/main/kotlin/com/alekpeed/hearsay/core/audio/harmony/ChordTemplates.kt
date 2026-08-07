@@ -7,7 +7,7 @@ import com.alekpeed.hearsay.core.model.music.NoteSpelling
 import com.alekpeed.hearsay.core.model.music.SeventhType
 
 /**
- * The chord vocabulary the recogniser can actually name, as pitch-class templates.
+ * The chord vocabulary the recognizer can actually name, as pitch-class templates.
  *
  * Deliberately wider than the triads-only vocabulary most chord apps use — sevenths, sixths and
  * ninths are the point for the repertoire this product targets — but not so wide that every

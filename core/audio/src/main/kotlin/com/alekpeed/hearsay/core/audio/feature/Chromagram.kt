@@ -22,7 +22,7 @@ class Chromagram(
 
     fun timeMsOfFrame(frame: Int): Long = (frame * hopSeconds * 1000).toLong()
 
-    /** Averages the frames covering `[startMs, endMs)` into one normalised chroma vector. */
+    /** Averages the frames covering `[startMs, endMs)` into one normalized chroma vector. */
     fun averageBetween(startMs: Long, endMs: Long): FloatArray {
         val first = ((startMs / 1000.0) / hopSeconds).toInt().coerceIn(0, maxOf(0, frameCount - 1))
         val last = ((endMs / 1000.0) / hopSeconds).toInt().coerceIn(first, maxOf(0, frameCount - 1))
@@ -100,8 +100,8 @@ class Chromagram(
         private const val HarmonicSuppression = 1.15f
 
         private fun bandWeight(frequency: Double): Float {
-            val octavesFromCentre = log2(frequency / 440.0)
-            return (2.0.pow(-0.35 * octavesFromCentre * octavesFromCentre)).toFloat()
+            val octavesFromCenter = log2(frequency / 440.0)
+            return (2.0.pow(-0.35 * octavesFromCenter * octavesFromCenter)).toFloat()
         }
 
         /** Log compression: a chord is defined by which notes are present, not how loud they are. */

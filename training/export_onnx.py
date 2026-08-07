@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export a trained checkpoint to ONNX, ready for the Android app.
 
-    python3 export_onnx.py --checkpoint models/best.pt --out models/chord-recogniser.onnx
+    python3 export_onnx.py --checkpoint models/best.pt --out models/chord-recognizer.onnx
 
 Writes the model beside a JSON card describing its vocabulary, feature settings and checksum —
 the metadata `docs/model-registry.md` requires before a model is allowed into the app.
@@ -20,20 +20,20 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hearsay_training import dataset, harte  # noqa: E402
-from hearsay_training.model import ChordRecogniser  # noqa: E402
+from hearsay_training.model import ChordRecognizer  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--out", type=Path, default=Path("models/chord-recogniser.onnx"))
+    parser.add_argument("--out", type=Path, default=Path("models/chord-recognizer.onnx"))
     parser.add_argument("--version", default="1.0.0")
     parser.add_argument("--opset", type=int, default=17)
     args = parser.parse_args()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
-    model = ChordRecogniser()
+    model = ChordRecognizer()
     model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
     model.eval()
 
@@ -53,7 +53,7 @@ def main() -> int:
 
     digest = hashlib.sha256(args.out.read_bytes()).hexdigest()
     card = {
-        "id": "chord-recogniser-crnn",
+        "id": "chord-recognizer-crnn",
         "version": args.version,
         "runtime": "onnx",
         "quality": "preview",

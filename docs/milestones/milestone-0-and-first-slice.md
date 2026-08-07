@@ -35,7 +35,7 @@ recreation.
 - [x] Loop, speed, display transposition, hide chords
 - [x] Symbol, Roman numeral and Nashville notation
 - [x] Chord correction that forks a revision instead of overwriting
-- [x] Timeline lookup tests, including behaviour at event boundaries
+- [x] Timeline lookup tests, including behavior at event boundaries
 - [x] Process-recreation test for the performance ViewModel
 
 ## Quality gates
@@ -44,7 +44,7 @@ recreation.
 - [x] Error-state UI — missing source, lost permission, unsupported decoder, unknown playback error, empty chart
 - [x] Persistence verified — round trips, cascade deletion, revision history
 - [x] Accessibility labels — table rows read as one sentence; hidden chords stay hidden from the screen reader
-- [x] Documentation matches behaviour
+- [x] Documentation matches behavior
 - [x] No unfinished placeholder presented as complete
 
 ## Deliberately not done

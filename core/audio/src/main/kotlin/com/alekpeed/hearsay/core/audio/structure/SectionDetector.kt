@@ -22,7 +22,7 @@ data class DetectedSection(
  * Correlating a checkerboard kernel down its diagonal produces a novelty curve that peaks at the
  * boundaries between those blocks — the standard approach, and it needs no training data.
  *
- * Sections that turn out to be similar are then grouped, so a chorus heard three times is labelled
+ * Sections that turn out to be similar are then grouped, so a chorus heard three times is labeled
  * as the same chorus rather than as three unrelated parts.
  */
 object SectionDetector {
@@ -70,19 +70,19 @@ object SectionDetector {
         val novelty = FloatArray(size)
         val half = KernelSize / 2
 
-        for (centre in half until size - half) {
+        for (center in half until size - half) {
             var pastToPast = 0f
             var futureToFuture = 0f
             var pastToFuture = 0f
             for (i in 0 until half) {
                 for (j in 0 until half) {
-                    pastToPast += similarity(vectors[centre - half + i], vectors[centre - half + j])
-                    futureToFuture += similarity(vectors[centre + i], vectors[centre + j])
-                    pastToFuture += similarity(vectors[centre - half + i], vectors[centre + j])
+                    pastToPast += similarity(vectors[center - half + i], vectors[center - half + j])
+                    futureToFuture += similarity(vectors[center + i], vectors[center + j])
+                    pastToFuture += similarity(vectors[center - half + i], vectors[center + j])
                 }
             }
             val within = (pastToPast + futureToFuture) / 2f
-            novelty[centre] = max(0f, (within - pastToFuture) / (half * half))
+            novelty[center] = max(0f, (within - pastToFuture) / (half * half))
         }
         return novelty
     }

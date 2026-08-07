@@ -66,7 +66,7 @@ data class NoteSpelling(val letter: Letter, val alteration: Int = 0) {
     }
 }
 
-/** Mode of a key centre. Only the two the chord vocabulary needs are modelled for now. */
+/** Mode of a key center. Only the two the chord vocabulary needs are modelled for now. */
 enum class Mode { MAJOR, MINOR }
 
 @Serializable

@@ -48,7 +48,7 @@ class BuildPlaybackRequestUseCase @Inject constructor() {
  * Lays a hand-entered beat grid over a project so its chords can be typed in.
  *
  * This is not analysis and does not claim to be: every event it writes is attributed to the user,
- * and the revision it creates is labelled as such.
+ * and the revision it creates is labeled as such.
  */
 class CreateManualChartUseCase @Inject constructor(
     private val chartRepository: ChartRepository,

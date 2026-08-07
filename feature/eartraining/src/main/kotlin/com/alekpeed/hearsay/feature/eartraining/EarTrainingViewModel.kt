@@ -31,7 +31,7 @@ import javax.inject.Inject
 
 sealed interface EarTrainingUiState {
 
-    /** Nothing analysed and confident enough to ask about yet. */
+    /** Nothing analyzed and confident enough to ask about yet. */
     data class NotReady(val reason: String, val history: History) : EarTrainingUiState
 
     data class Ready(val eligibleProjects: Int, val history: History) : EarTrainingUiState
@@ -89,7 +89,7 @@ class EarTrainingViewModel @Inject constructor(
     ) { active, history, eligible ->
         when {
             active == null && eligible == 0 -> EarTrainingUiState.NotReady(
-                reason = "Analyse a song first. Questions are only built from chords the app is " +
+                reason = "Analyze a song first. Questions are only built from chords the app is " +
                     "confident about, or ones you have confirmed yourself.",
                 history = history,
             )

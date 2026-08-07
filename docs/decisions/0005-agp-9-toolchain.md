@@ -15,7 +15,7 @@ current AndroidX releases the project depends on — `core-ktx` 1.19, `hilt-navi
 Gradle 9.7, AGP 9.3.1, compileSdk 37, Hilt 2.60.1, Kotlin 2.3.21.
 
 `targetSdk` stays at 36. Compiling against a newer platform and targeting an older one are separate
-choices; raising `targetSdk` opts into new runtime behaviour and should be a deliberate step with
+choices; raising `targetSdk` opts into new runtime behavior and should be a deliberate step with
 testing behind it.
 
 AGP 9 provides Kotlin support directly, so the `org.jetbrains.kotlin.android` plugin is removed from

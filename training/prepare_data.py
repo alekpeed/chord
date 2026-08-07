@@ -56,7 +56,7 @@ def main() -> int:
             missing.append(name)
             continue
 
-        target = args.out / f"{dataset.normalise_title(name)}.npz"
+        target = args.out / f"{dataset.normalize_title(name)}.npz"
         if target.exists():
             matched += 1
             continue

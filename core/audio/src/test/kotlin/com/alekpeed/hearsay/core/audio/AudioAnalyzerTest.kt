@@ -54,7 +54,7 @@ class AudioAnalyzerTest {
     }
 
     @Test
-    fun `recognises a major triad progression`() {
+    fun `recognizes a major triad progression`() {
         val (samples, _) = SignalGenerator.progression(listOf("C", "F", "G", "C"), repeats = 3)
         val result = analyze(samples)
         val symbols = symbolsOf(result)
@@ -65,7 +65,7 @@ class AudioAnalyzerTest {
     }
 
     @Test
-    fun `recognises minor and dominant sevenths`() {
+    fun `recognizes minor and dominant sevenths`() {
         val (samples, _) = SignalGenerator.progression(listOf("Dm7", "G7", "Cmaj7", "Cmaj7"), repeats = 3)
         val result = analyze(samples)
         val symbols = symbolsOf(result)
@@ -80,7 +80,7 @@ class AudioAnalyzerTest {
         val (samples, _) = SignalGenerator.progression(listOf("C", "Am"), repeats = 4)
         val symbols = symbolsOf(analyze(samples))
 
-        // C and Am share two notes; a recogniser without a root weighting confuses them constantly.
+        // C and Am share two notes; a recognizer without a root weighting confuses them constantly.
         assertTrue("Expected C among $symbols", symbols.any { it == "C" })
         assertTrue("Expected Am among $symbols", symbols.any { it == "Am" })
     }

@@ -22,7 +22,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hearsay_training import harte  # noqa: E402
-from hearsay_training.model import ChordRecogniser  # noqa: E402
+from hearsay_training.model import ChordRecognizer  # noqa: E402
 
 ROOT_ONLY = "root"
 MAJ_MIN = "majmin"
@@ -92,7 +92,7 @@ def main() -> int:
     held_back = files[: max(1, int(len(files) * args.validation_fraction))]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ChordRecogniser().to(device)
+    model = ChordRecognizer().to(device)
     model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.eval()
 

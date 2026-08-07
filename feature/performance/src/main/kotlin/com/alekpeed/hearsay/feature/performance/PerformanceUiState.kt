@@ -29,7 +29,7 @@ sealed interface PerformanceUiState {
         val alternatives: Map<String, List<ChordAlternative>>,
     ) : PerformanceUiState {
 
-        val isAnalysing: Boolean get() = analysis?.isActive == true
+        val isAnalyzing: Boolean get() = analysis?.isActive == true
 
         val hasChart: Boolean get() = rows.isNotEmpty()
 

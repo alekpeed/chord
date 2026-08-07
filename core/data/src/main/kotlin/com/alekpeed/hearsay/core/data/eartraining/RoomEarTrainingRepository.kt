@@ -70,7 +70,7 @@ class RoomEarTrainingRepository @Inject constructor(
 
     /**
      * Attempts are written as they happen rather than at the end, so a session abandoned halfway
-     * still counts toward what the user has practised.
+     * still counts toward what the user has practiced.
      */
     override suspend fun recordAttempt(sessionId: String, attempt: ExerciseAttempt) {
         withContext(ioDispatcher) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the chord recogniser.
+"""Train the chord recognizer.
 
     python3 train.py --features data/features --out models/
 
@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hearsay_training import dataset as data_utils  # noqa: E402
 from hearsay_training.harte import NO_CHORD_INDEX, NUM_CLASSES  # noqa: E402
-from hearsay_training.model import ChordRecogniser, count_parameters  # noqa: E402
+from hearsay_training.model import ChordRecognizer, count_parameters  # noqa: E402
 
 SEQUENCE_FRAMES = 256  # about 24 seconds, long enough to learn that chords persist
 
@@ -142,11 +142,11 @@ def main() -> int:
         batch_size=args.batch_size, shuffle=False, num_workers=2,
     )
 
-    model = ChordRecogniser().to(device)
+    model = ChordRecognizer().to(device)
     print(f"{count_parameters(model):,} parameters")
 
-    optimiser = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=args.epochs)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
     best_accuracy = 0.0
@@ -159,12 +159,12 @@ def main() -> int:
 
         for features, labels in train_loader:
             features, labels = features.to(device), labels.to(device)
-            optimiser.zero_grad()
+            optimizer.zero_grad()
             logits = model(features)
             loss = criterion(logits.reshape(-1, NUM_CLASSES), labels.reshape(-1))
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            optimiser.step()
+            optimizer.step()
             running += loss.item()
 
         scheduler.step()

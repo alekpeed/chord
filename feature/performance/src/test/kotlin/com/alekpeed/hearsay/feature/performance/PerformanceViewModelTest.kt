@@ -225,13 +225,13 @@ class PerformanceViewModelTest {
     }
 
     @Test
-    fun `cancelling analysis reaches the launcher`() = runTest {
+    fun `canceling analysis reaches the launcher`() = runTest {
         val (model, _) = viewModel()
         model.uiState.test { awaitReadyState() }
 
         model.actions.onCancelAnalysis()
 
-        assertEquals("p1", launcher.cancelled.single())
+        assertEquals("p1", launcher.canceled.single())
     }
 
     @Test
