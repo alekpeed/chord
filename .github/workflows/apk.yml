@@ -115,11 +115,13 @@ jobs:
 
           # Replaced rather than added to, so "latest" is a single moving target instead of a list.
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          # Deliberately not --prerelease: /releases/latest/ skips prereleases, so marking it one
+          # leaves the permanent download link resolving to nothing.
           gh release create "$tag" dist/*.apk \
             --title "Hearsay $VERSION ($SHORT)" \
             --notes-file notes.md \
             --target "$GITHUB_SHA" \
-            --prerelease
+            --latest
 
           echo "### Download" >> "$GITHUB_STEP_SUMMARY"
           echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk" >> "$GITHUB_STEP_SUMMARY"
