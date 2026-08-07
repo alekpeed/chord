@@ -8,6 +8,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.alekpeed.hearsay.core.database.dao.AnalysisDao
 import com.alekpeed.hearsay.core.database.dao.ChartDao
+import com.alekpeed.hearsay.core.database.dao.EarTrainingDao
 import com.alekpeed.hearsay.core.database.dao.PracticeDao
 import com.alekpeed.hearsay.core.database.dao.ProjectDao
 import com.alekpeed.hearsay.core.database.dao.RevisionDao
@@ -15,6 +16,8 @@ import com.alekpeed.hearsay.core.database.entity.AnalysisJobEntity
 import com.alekpeed.hearsay.core.database.entity.AnalysisStageEntity
 import com.alekpeed.hearsay.core.database.entity.BeatEventEntity
 import com.alekpeed.hearsay.core.database.entity.ChordEventEntity
+import com.alekpeed.hearsay.core.database.entity.EarTrainingAttemptEntity
+import com.alekpeed.hearsay.core.database.entity.EarTrainingSessionEntity
 import com.alekpeed.hearsay.core.database.entity.MediaAssetEntity
 import com.alekpeed.hearsay.core.database.entity.ProjectEntity
 import com.alekpeed.hearsay.core.database.entity.RevisionEntity
@@ -45,6 +48,8 @@ class StringListConverter {
         SavedLoopEntity::class,
         AnalysisJobEntity::class,
         AnalysisStageEntity::class,
+        EarTrainingSessionEntity::class,
+        EarTrainingAttemptEntity::class,
     ],
     version = HearsayDatabase.Version,
     exportSchema = true,
@@ -57,9 +62,10 @@ abstract class HearsayDatabase : RoomDatabase() {
     abstract fun revisionDao(): RevisionDao
     abstract fun practiceDao(): PracticeDao
     abstract fun analysisDao(): AnalysisDao
+    abstract fun earTrainingDao(): EarTrainingDao
 
     companion object {
-        const val Version = 2
+        const val Version = 3
         const val Name = "hearsay.db"
 
         /**
@@ -114,6 +120,56 @@ abstract class HearsayDatabase : RoomDatabase() {
                     """.trimIndent(),
                 )
                 connection.execSQL("CREATE INDEX IF NOT EXISTS `index_analysis_stages_jobId` ON `analysis_stages` (`jobId`)")
+            }
+        }
+
+        /** Adds ear-training history. Sessions and attempts are additive; nothing existing moves. */
+        val Migration2To3 = object : Migration(2, 3) {
+            override fun migrate(connection: SupportSQLiteDatabase) {
+                connection.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `ear_training_sessions` (
+                        `id` TEXT NOT NULL,
+                        `createdAtMs` INTEGER NOT NULL,
+                        `completedAtMs` INTEGER,
+                        `mode` TEXT NOT NULL,
+                        `projectScope` TEXT,
+                        `score` REAL NOT NULL,
+                        `total` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent(),
+                )
+                connection.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `ear_training_attempts` (
+                        `id` TEXT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `projectId` TEXT NOT NULL,
+                        `sourceEventId` TEXT NOT NULL,
+                        `exerciseType` TEXT NOT NULL,
+                        `prompt` TEXT NOT NULL,
+                        `correctAnswer` TEXT NOT NULL,
+                        `response` TEXT,
+                        `correct` INTEGER NOT NULL,
+                        `confidenceAtGeneration` REAL NOT NULL,
+                        `replayCount` INTEGER NOT NULL,
+                        `isolatedStemUsed` INTEGER NOT NULL,
+                        `responseTimeMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`sessionId`) REFERENCES `ear_training_sessions`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                connection.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_ear_training_attempts_sessionId` " +
+                        "ON `ear_training_attempts` (`sessionId`)",
+                )
+                connection.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_ear_training_attempts_exerciseType` " +
+                        "ON `ear_training_attempts` (`exerciseType`)",
+                )
             }
         }
     }

@@ -7,11 +7,11 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.alekpeed.hearsay.feature.eartraining.ui.EarTrainingRoute
 import com.alekpeed.hearsay.feature.library.ui.LibraryRoute
 import com.alekpeed.hearsay.feature.performance.PerformanceViewModel
 import com.alekpeed.hearsay.feature.performance.ui.PerformanceRoute
 import com.alekpeed.hearsay.feature.processing.ui.ProcessingRoute
-import com.alekpeed.hearsay.ui.screens.EarTrainingPlaceholderScreen
 import com.alekpeed.hearsay.ui.screens.SettingsPlaceholderScreen
 
 /** The destinations reachable from the navigation rail or bar. */
@@ -53,7 +53,11 @@ fun HearsayNavHost(
             PerformanceRoute(onBack = { navController.popBackStack() })
         }
 
-        composable(TopLevelRoute.EAR_TRAINING.route) { EarTrainingPlaceholderScreen() }
+        composable(TopLevelRoute.EAR_TRAINING.route) {
+            EarTrainingRoute(
+                onOpenProject = { projectId -> navController.navigate(Destinations.performance(projectId)) },
+            )
+        }
         composable(TopLevelRoute.PROCESSING.route) {
             ProcessingRoute(
                 onOpenProject = { projectId -> navController.navigate(Destinations.performance(projectId)) },

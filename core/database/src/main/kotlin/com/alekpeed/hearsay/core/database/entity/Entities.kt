@@ -284,3 +284,48 @@ data class JobWithStages(
     @Relation(parentColumn = "id", entityColumn = "jobId")
     val stages: List<AnalysisStageEntity>,
 )
+
+@Entity(tableName = "ear_training_sessions")
+data class EarTrainingSessionEntity(
+    @PrimaryKey val id: String,
+    val createdAtMs: Long,
+    val completedAtMs: Long?,
+    val mode: String,
+    val projectScope: String?,
+    val score: Float,
+    val total: Int,
+)
+
+/**
+ * One answered question.
+ *
+ * [sourceEventId] and [confidenceAtGeneration] are kept so a disputed result can be traced to the
+ * chord it came from and to how sure the app was at the time.
+ */
+@Entity(
+    tableName = "ear_training_attempts",
+    foreignKeys = [
+        ForeignKey(
+            entity = EarTrainingSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("sessionId"), Index("exerciseType")],
+)
+data class EarTrainingAttemptEntity(
+    @PrimaryKey val id: String,
+    val sessionId: String,
+    val projectId: String,
+    val sourceEventId: String,
+    val exerciseType: String,
+    val prompt: String,
+    val correctAnswer: String,
+    val response: String?,
+    val correct: Boolean,
+    val confidenceAtGeneration: Float,
+    val replayCount: Int,
+    val isolatedStemUsed: Boolean,
+    val responseTimeMs: Long,
+)

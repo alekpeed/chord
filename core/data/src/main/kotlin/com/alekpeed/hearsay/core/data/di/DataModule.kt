@@ -2,12 +2,14 @@ package com.alekpeed.hearsay.core.data.di
 
 import com.alekpeed.hearsay.core.data.analysis.LocalAnalysisBackend
 import com.alekpeed.hearsay.core.data.analysis.RoomAnalysisRepository
+import com.alekpeed.hearsay.core.data.eartraining.RoomEarTrainingRepository
 import com.alekpeed.hearsay.core.data.repository.AndroidMediaImportRepository
 import com.alekpeed.hearsay.core.data.repository.RoomChartRepository
 import com.alekpeed.hearsay.core.data.repository.RoomPracticeRepository
 import com.alekpeed.hearsay.core.data.repository.RoomProjectRepository
 import com.alekpeed.hearsay.core.model.analysis.AnalysisRepository
 import com.alekpeed.hearsay.core.model.analysis.ProcessingBackendGateway
+import com.alekpeed.hearsay.core.model.eartraining.EarTrainingRepository
 import com.alekpeed.hearsay.core.model.repository.ChartRepository
 import com.alekpeed.hearsay.core.model.repository.MediaImportRepository
 import com.alekpeed.hearsay.core.model.repository.PracticeRepository
@@ -55,4 +57,8 @@ abstract class DataModule {
     @Binds
     @Singleton
     abstract fun bindsProcessingBackend(impl: LocalAnalysisBackend): ProcessingBackendGateway
+
+    @Binds
+    @Singleton
+    abstract fun bindsEarTrainingRepository(impl: RoomEarTrainingRepository): EarTrainingRepository
 }

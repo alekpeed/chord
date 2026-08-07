@@ -47,16 +47,6 @@ private fun NotBuiltYetScreen(
 }
 
 @Composable
-fun EarTrainingPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScreen(
-    title = "Ear training",
-    explanation = "Exercises are generated from your own analyzed songs — the actual harmony, voicings and " +
-        "bass movement in music you are studying.",
-    blockedBy = "Waiting on analysis: a question can only be asked about a chord the app is confident in, " +
-        "or one you have confirmed yourself.",
-    modifier = modifier,
-)
-
-@Composable
 fun SettingsPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScreen(
     title = "Settings",
     explanation = "Processing profile, notation preferences, model downloads and storage management " +
