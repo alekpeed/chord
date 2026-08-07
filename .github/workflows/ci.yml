@@ -43,6 +43,11 @@ jobs:
       # Instrumentation and Compose UI tests are not run here: they need a device, and this runner
       # has no KVM. Run them locally with ./gradlew connectedDebugAndroidTest.
 
+      - name: Training-pipeline tests
+        run: |
+          python3 -m pip install --quiet numpy
+          python3 -m unittest discover training/tests
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4

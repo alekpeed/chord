@@ -1,0 +1,7 @@
+# PyTorch is installed separately by setup.sh, from the CUDA index rather than PyPI.
+librosa>=0.10.2
+numpy>=1.26
+soundfile>=0.12
+onnx>=1.16
+onnxruntime>=1.18
+tqdm>=4.66

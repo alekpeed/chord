@@ -12,3 +12,10 @@ build/
 *.hprof
 *.keystore
 !debug.keystore
+
+# Training artefacts: models and features are large and regenerable.
+training/.venv/
+training/data/
+training/models/
+__pycache__/
+*.pyc
