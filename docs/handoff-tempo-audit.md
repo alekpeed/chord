@@ -38,7 +38,7 @@ Each of these was tested and eliminated. Re-deriving them wastes your budget.
 3. **The estimator being broken in general.** Sweeping known tempos through the full
    `AudioAnalyzer` at all three profiles recovers them: 75→76, 90→89, 100→99, 120→117, 135→136.
 4. **Decoder sample-rate error.** `DecodeSink` was discarding the codec's authoritative output
-   format in favour of the container's declared one (a real bug, fixed in `dd0ae5f`, HE-AAC being
+   format in favor of the container's declared one (a real bug, fixed in `dd0ae5f`, HE-AAC being
    the motivating case). It made no difference to the reported tempo.
 5. **Soft or sustained material.** A no-transient pad fixture tracks accurately at every tempo.
 6. **Swing.** A shuffled groove fixture at 85/90/95 BPM tracks accurately at every swing strength.
@@ -59,8 +59,8 @@ Each of these was tested and eliminated. Re-deriving them wastes your budget.
 
 The relevant code is `core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/BeatTracker.kt`.
 
-1. **Recentering the counting prior from 120 BPM to 100** (`PreferredBpm`). The centre is where
-   octave ties break; at 120 it favoured the double of a 67 BPM ballad by roughly 17%. This moved
+1. **Recentering the counting prior from 120 BPM to 100** (`PreferredBpm`). The center is where
+   octave ties break; at 120 it favored the double of a 67 BPM ballad by roughly 17%. This moved
    the answer from 135 to 129 — the decision changed, the level did not.
 
 2. **A half-time check** (`settleHalfTime`). It lays the winner's beat grid over the onset envelope
@@ -105,7 +105,7 @@ whose stage ordering is deliberate and documented.
 ### An orthogonal thing you may also do
 
 A **half/double toggle** on the chart, plus tap-along tempo. The beat grid's *shape* is generally
-right and only its labelling is wrong, so halving is exact rather than a re-estimate. Every
+right and only its labeling is wrong, so halving is exact rather than a re-estimate. Every
 commercial chord app ships this because no algorithm gets tactus right on every recording. This is
 a product fix and does not replace the analysis fix, but it is the thing that makes the app usable
 regardless of what the estimator concludes. `PerformanceViewModel` and `ChordTable` are where it
@@ -119,19 +119,19 @@ Beyond the tempo problem, audit for correctness bugs, real inefficiencies, and m
 Some context on where the weak ground is:
 
 - **Nothing was tested on a physical device until very recently.** Every bug found on hardware in
-  one evening — a service race that stranded analyses, memory exhaustion, a chart erased at the
+  one evening — a service race that stranded analyzes, memory exhaustion, a chart erased at the
   moment it was saved, a 140 ms systematic beat offset — was invisible to a full green test suite.
   Treat "the tests pass" as weak evidence.
 - **`MediaCodec` cannot be executed off-device**, so `PcmDecoder` has never actually run in any test
   or CI. `DecodeSinkTest` exercises `DecodeSink` in isolation under Robolectric. That gap has hidden
-  multiple real bugs. Scrutinise it accordingly.
+  multiple real bugs. Scrutinize it accordingly.
 - **`core/model` and `core/audio` are plain Kotlin JVM modules** with no Android dependency. This is
   a deliberate constraint: all music theory and DSP is testable without an emulator, and the desktop
   tool in `tools/analyzer` reuses the same code. Preserve it.
 - **Known-incomplete, not defects:** no "import a chart" UI (`ChartImporter` exists and is tested but
   nothing calls it); no ONNX inference, so the training pipeline in `training/` produces a model with
   nowhere to run; `Settings` is a placeholder; the desktop analyzer is not packaged into releases.
-- **A residual ~45 ms beat offset** was measured and is unexplained. Windows are now centred, which
+- **A residual ~45 ms beat offset** was measured and is unexplained. Windows are now centerd, which
   removed 140 ms of a systematic ~186 ms lead. The remainder is real and its cause is not known.
 
 ## Part 3 — Constraints
