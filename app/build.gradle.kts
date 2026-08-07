@@ -34,6 +34,26 @@ android {
     }
 
     signingConfigs {
+        // A fixed debug key, committed to the repository.
+        //
+        // Android identifies an app by its signature, so a build signed with a different key than
+        // the one already installed is a different app and will not update over it — reported only
+        // as a vague "app not installed". Gradle's default debug keystore is generated per machine,
+        // and CI generates a fresh one on every run, so every single build had a new signature and
+        // every install needed an uninstall first.
+        //
+        // Committing this one is the deliberate trade. It is a debug key: it is public, so anyone
+        // with this repository can build an APK that Android will happily install over yours. That
+        // is acceptable for an app distributed to one person from a GitHub release and unacceptable
+        // for anything on a store, which is what the release config below is for — set the four
+        // HEARSAY_* secrets and that key takes over, with this becoming irrelevant.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+
         val keystore = signingSecret("HEARSAY_KEYSTORE")?.let(::file)
         if (keystore != null && keystore.exists()) {
             create("release") {
