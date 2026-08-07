@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The library database and a user's corrections are worth backing up. Copies of source audio and
-  generated artifacts are not: they can be large, and they can be recreated from the originals.
+  Only the library database and preferences are backed up. That is deliberately an allowlist: the
+  app's private `files/sources/` directory holds copies of the user's audio, which is large and
+  recreatable from the originals, and nothing outside these two domains is included.
 -->
 <full-backup-content>
     <include domain="database" path="." />
     <include domain="sharedpref" path="." />
-    <exclude domain="file" path="sources/" />
 </full-backup-content>

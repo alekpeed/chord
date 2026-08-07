@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  An allowlist, as in backup_rules.xml: the database and preferences travel, copies of the user's
+  audio do not.
+-->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="database" path="." />
         <include domain="sharedpref" path="." />
-        <exclude domain="file" path="sources/" />
     </cloud-backup>
     <device-transfer>
         <include domain="database" path="." />
         <include domain="sharedpref" path="." />
-        <exclude domain="file" path="sources/" />
     </device-transfer>
 </data-extraction-rules>
