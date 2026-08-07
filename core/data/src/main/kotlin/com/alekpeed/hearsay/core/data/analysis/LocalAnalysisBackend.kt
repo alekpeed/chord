@@ -8,7 +8,6 @@ import com.alekpeed.hearsay.core.audio.dsp.AudioBuffer
 import com.alekpeed.hearsay.core.common.dispatchers.Dispatcher
 import com.alekpeed.hearsay.core.common.dispatchers.HearsayDispatcher
 import com.alekpeed.hearsay.core.common.time.TimeProvider
-import com.alekpeed.hearsay.core.data.mapper.toEntity
 import com.alekpeed.hearsay.core.database.dao.ProjectDao
 import com.alekpeed.hearsay.core.media.ingest.DecodeException
 import com.alekpeed.hearsay.core.media.ingest.DecodeFailure
@@ -160,14 +159,16 @@ class LocalAnalysisBackend @Inject constructor(
             // asserts and a chart the user can argue with.
             persistAlternates(projectId, result)
 
-            projectDao.upsertProject(
-                project.project.copy(
-                    analysisStatus = AnalysisStatus.COMPLETE,
-                    analysisProfile = profile,
-                    keyLabel = result.key?.render(unicodeAccidentals = false),
-                    tempoBpm = result.tempoBpm,
-                    updatedAtMs = timeProvider.nowMs(),
-                ).toEntity(),
+            // Only the columns this analysis decided. `project` was read before decoding started,
+            // so writing it back whole would undo everything since — including the active revision
+            // that replaceChart just set, which is the pointer to the chart written moments ago.
+            projectDao.updateAnalysisSummary(
+                projectId = projectId,
+                status = AnalysisStatus.COMPLETE.name,
+                profile = profile.name,
+                keyLabel = result.key?.render(unicodeAccidentals = false),
+                tempoBpm = result.tempoBpm,
+                updatedAtMs = timeProvider.nowMs(),
             )
             onStage(StageType.FINALIZE, StageStatus.COMPLETE, 1f, null)
 

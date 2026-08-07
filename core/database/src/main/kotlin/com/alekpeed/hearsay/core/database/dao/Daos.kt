@@ -63,6 +63,36 @@ interface ProjectDao {
     @Query("UPDATE projects SET activeRevisionId = :revisionId, updatedAtMs = :updatedAtMs WHERE id = :projectId")
     suspend fun setActiveRevision(projectId: String, revisionId: String, updatedAtMs: Long)
 
+    /**
+     * Records what an analysis concluded, touching only those columns.
+     *
+     * Deliberately not an upsert of the whole row. A finishing analysis holds a project it read
+     * before it started, and writing that back undoes anything changed in between — which is what
+     * happened to activeRevisionId: the analysis wrote a chart, pointed the project at it, then
+     * overwrote the pointer with the null it had been holding since before the chart existed. Key
+     * and tempo appeared and the chart did not.
+     */
+    @Suppress("LongParameterList")
+    @Query(
+        """
+        UPDATE projects
+        SET analysisStatus = :status,
+            analysisProfile = :profile,
+            keyLabel = :keyLabel,
+            tempoBpm = :tempoBpm,
+            updatedAtMs = :updatedAtMs
+        WHERE id = :projectId
+        """,
+    )
+    suspend fun updateAnalysisSummary(
+        projectId: String,
+        status: String,
+        profile: String,
+        keyLabel: String?,
+        tempoBpm: Float?,
+        updatedAtMs: Long,
+    )
+
     /** Removes the project row; every derived row follows it through cascading foreign keys. */
     @Query("DELETE FROM projects WHERE id = :projectId")
     suspend fun deleteProject(projectId: String)

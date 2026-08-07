@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -97,6 +98,50 @@ class RoomChartRepositoryTest {
             beats = grid.beats,
             tempoSegments = grid.tempoSegments,
         )
+    }
+
+    @Test
+    fun `an analysis recording its result does not lose the chart it just wrote`() = runTest {
+        // Exactly the sequence a finishing analysis performs. It reads the project before decoding,
+        // writes a chart, points the project at it, and then records the key and tempo it found.
+        // Writing that last step as the whole project row put back the activeRevisionId captured
+        // before the chart existed — so key and tempo appeared in the header and the chart screen
+        // said "No chart yet".
+        val projectId = "project-1"
+        database.projectDao().upsertProject(
+            Project(
+                id = projectId,
+                title = "Love's in Need of Love Today",
+                artist = "Stevie Wonder",
+                album = null,
+                createdAtMs = 0,
+                updatedAtMs = 0,
+                durationMs = 8_000,
+                analysisStatus = AnalysisStatus.RUNNING,
+                activeRevisionId = null,
+                keyLabel = null,
+            ).toEntity(),
+        )
+        val staleSnapshot = projectRepository.getProject(projectId)!!
+
+        chartRepository.replaceChart(projectId, twoBarChart(), "Analysis", revisionSourceIsUser = false)
+        database.projectDao().updateAnalysisSummary(
+            projectId = projectId,
+            status = AnalysisStatus.COMPLETE.name,
+            profile = staleSnapshot.project.analysisProfile.name,
+            keyLabel = "Bb major",
+            tempoBpm = 99f,
+            updatedAtMs = 5_000,
+        )
+
+        val chart = chartRepository.observeChart(projectId).first()
+        val project = projectRepository.getProject(projectId)!!.project
+
+        assertEquals(4, chart.chordEvents.size)
+        assertEquals("Bb major", project.keyLabel)
+        assertEquals(99f, project.tempoBpm!!, 1e-6f)
+        assertEquals(AnalysisStatus.COMPLETE, project.analysisStatus)
+        assertNotNull("the project must still point at the chart", project.activeRevisionId)
     }
 
     @Test
