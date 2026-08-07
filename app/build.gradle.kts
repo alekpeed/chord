@@ -19,6 +19,26 @@ val localProperties = Properties().apply {
 fun signingSecret(name: String): String? =
     System.getenv(name)?.takeIf(String::isNotBlank) ?: localProperties.getProperty(name)
 
+/**
+ * The commit this build came from, so a screenshot can be tied to a build.
+ *
+ * Without it, a report of what the app did is not attributable to any particular version, and a
+ * fix cannot be told apart from a fix that was never installed.
+ */
+val gitSha: String = System.getenv("HEARSAY_GIT_SHA")?.takeIf(String::isNotBlank)
+    ?: providers.exec {
+        commandLine("git", "rev-parse", "--short", "HEAD")
+    }.standardOutput.asText.map(String::trim).orNull?.takeIf(String::isNotEmpty)
+    ?: "unknown"
+
+/**
+ * Increments per CI build so Android accepts each one as an update.
+ *
+ * Android refuses to install an APK whose versionCode is lower than the installed one. Every build
+ * shipping as versionCode 1 meant they were all indistinguishable to the platform.
+ */
+val buildNumber: Int = System.getenv("HEARSAY_VERSION_CODE")?.toIntOrNull() ?: 1
+
 android {
     namespace = "com.alekpeed.hearsay"
     compileSdk = libs.versions.compileSdk.get().toInt()
@@ -27,8 +47,11 @@ android {
         applicationId = "com.alekpeed.hearsay"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
+        versionCode = buildNumber
         versionName = "0.1.0"
+
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -85,6 +108,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     testOptions {

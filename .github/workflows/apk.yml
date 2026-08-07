@@ -64,6 +64,10 @@ jobs:
           HEARSAY_KEYSTORE_PASSWORD: ${{ secrets.HEARSAY_KEYSTORE_PASSWORD }}
           HEARSAY_KEY_ALIAS: ${{ secrets.HEARSAY_KEY_ALIAS }}
           HEARSAY_KEY_PASSWORD: ${{ secrets.HEARSAY_KEY_PASSWORD }}
+          # Stamped into the APK so the app can say which commit it came from, and so each build
+          # outranks the last as far as Android's update check is concerned.
+          HEARSAY_GIT_SHA: ${{ github.sha }}
+          HEARSAY_VERSION_CODE: ${{ github.run_number }}
         run: ./gradlew assembleRelease --stacktrace
 
       - name: Collect the APK

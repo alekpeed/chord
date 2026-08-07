@@ -10,7 +10,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.alekpeed.hearsay.BuildConfig
 
 /**
  * Destinations that exist in the navigation model but have no feature behind them yet.
@@ -24,6 +26,7 @@ private fun NotBuiltYetScreen(
     explanation: String,
     blockedBy: String,
     modifier: Modifier = Modifier,
+    version: String? = null,
 ) {
     Column(
         modifier = modifier.fillMaxSize().padding(32.dp),
@@ -43,8 +46,19 @@ private fun NotBuiltYetScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.widthIn(max = 520.dp),
         )
+        if (version != null) {
+            Text(
+                text = version,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.widthIn(max = 520.dp).testTag(VersionTestTag),
+            )
+        }
     }
 }
+
+/** Named so a screenshot of the version can be located, and so a test can assert it is shown. */
+const val VersionTestTag = "app-version"
 
 @Composable
 fun SettingsPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScreen(
@@ -52,5 +66,8 @@ fun SettingsPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScreen
     explanation = "Processing profile, notation preferences, model downloads and storage management " +
         "will live here.",
     blockedBy = "Not built yet. Nothing in this build sends data anywhere: everything is stored on this device.",
+    // The commit this build came from. Without it, a report of what the app did cannot be tied to a
+    // version, and a fix that is working is indistinguishable from one that was never installed.
+    version = "Hearsay ${BuildConfig.VERSION_NAME} · build ${BuildConfig.BUILD_NUMBER} · ${BuildConfig.GIT_SHA}",
     modifier = modifier,
 )
