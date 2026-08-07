@@ -119,6 +119,17 @@ object ChordTemplates {
     ) {
         val name: String get() = "${PitchNames[root]}${template.label}"
 
+        /**
+         * True when [pitchClass] is the sixth or seventh this chord is named for.
+         *
+         * These are the notes that separate a chord from its own triad, and the ones a passing tone
+         * in the bass or an overtone can most easily counterfeit. Everything at or below the fifth
+         * is structure, not color.
+         */
+        fun isExtensionTone(pitchClass: Int): Boolean = template.intervals.any { interval ->
+            interval in ExtensionIntervals && Math.floorMod(root + interval, 12) == pitchClass
+        }
+
         override fun equals(other: Any?): Boolean =
             other is Candidate && other.root == root && other.template == template
 
@@ -136,6 +147,9 @@ object ChordTemplates {
     }
 
     /** Index of the no-chord state, appended after every real candidate. */
+    /** Sixths and sevenths: the intervals above the fifth that name a chord beyond its triad. */
+    private val ExtensionIntervals = setOf(9, 10, 11)
+
     val NoChordIndex: Int = Candidates.size
 
     val StateCount: Int = Candidates.size + 1

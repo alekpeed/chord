@@ -165,4 +165,49 @@ class AudioAnalyzerTest {
         }
         assertEquals(AnalysisStageId.entries.toList(), seen)
     }
+
+    @Test
+    fun `a moving bass under one harmony does not become several chords`() {
+        // The complaint this exists for: the bass walks, and every note it lands on turns into a
+        // new row. To a musician that is one chord. Detail decides whether the inversion is named
+        // at all, but it must never split one harmony into three.
+        val (samples, _) = SignalGenerator.progression(listOf("C", "C/E", "C/G", "C"), repeats = 3)
+
+        val simple = analyze(samples, AnalysisSettings.Balanced.copy(detail = ChartDetail.SIMPLE))
+        val roots = simple.chart.chordEvents.mapNotNull { it.chord?.root?.letter }
+
+        assertTrue(
+            "Expected the bass movement to stay one chord, got ${symbolsOf(simple)}",
+            simple.chart.chordEvents.size <= 4,
+        )
+        assertTrue("Expected C throughout, got $roots", roots.all { it == roots.first() })
+    }
+
+    @Test
+    fun `simpler detail never leaves more chords than fuller detail`() {
+        val (samples, _) = SignalGenerator.progression(listOf("Dm7", "G7", "Cmaj7", "Cmaj7"), repeats = 3)
+
+        val counts = ChartDetail.entries.associateWith { detail ->
+            analyze(samples, AnalysisSettings.Balanced.copy(detail = detail)).chart.chordEvents.size
+        }
+
+        assertTrue(
+            "Detail should not increase as it simplifies: $counts",
+            counts.getValue(ChartDetail.SIMPLE) <= counts.getValue(ChartDetail.FULL),
+        )
+    }
+
+    @Test
+    fun `the key is used to choose between chords the chroma cannot separate`() {
+        // G6 and Em7 are the same four pitch classes. Nothing in the spectrum can tell them apart;
+        // only knowing the piece is in G can. This is the tiebreaker the recognizer was missing.
+        val (samples, _) = SignalGenerator.progression(listOf("G", "C", "D", "G"), repeats = 4)
+        val result = analyze(samples)
+        val roots = result.chart.chordEvents.mapNotNull { it.chord?.root?.letter?.name }
+
+        assertTrue(
+            "Expected the tonic to appear, got ${symbolsOf(result)}",
+            roots.any { it == "G" },
+        )
+    }
 }

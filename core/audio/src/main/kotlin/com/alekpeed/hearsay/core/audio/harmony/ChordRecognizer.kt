@@ -20,6 +20,13 @@ data class RecognizedChord(
 data class ChordAlternate(val chord: Chord, val score: Float)
 
 /**
+ * The key an analysis settled on, used to break ties between chords that sound alike.
+ *
+ * @param confidence how much the key estimate is trusted; a weak estimate barely tilts anything.
+ */
+data class KeyContext(val tonicPitchClass: Int, val isMinor: Boolean, val confidence: Float)
+
+/**
  * Beat-synchronous chord recognition.
  *
  * Chroma is averaged over each beat rather than each frame, which is the single biggest quality
@@ -35,23 +42,28 @@ class ChordRecognizer(
     private val relatedTransitionBonus: Float = 0.4f,
     private val noChordThreshold: Float = 0.42f,
     private val emissionSharpness: Float = 7.5f,
+    private val slashChords: Boolean = true,
+    private val extensionPenalty: Float = 1f,
 ) {
 
     /**
      * @param beatTimesMs boundaries of each analysis span; N boundaries yield N-1 spans.
      * @param bassChroma optional low-band chroma used to name inversions and slash chords.
+     * @param key the estimated key, which decides between chords the chroma cannot separate.
      */
     fun recognize(
         chroma: Chromagram,
         beatTimesMs: List<Long>,
         bassChroma: Chromagram? = null,
         preferFlats: Boolean = false,
+        key: KeyContext? = null,
     ): List<RecognizedChord> {
         if (beatTimesMs.size < 2) return emptyList()
 
         val spans = beatTimesMs.zipWithNext()
         val observations = spans.map { (start, end) -> chroma.averageBetween(start, end) }
-        val emissions = observations.map { emissionScores(it) }
+        val priors = contextPriors(key)
+        val emissions = observations.map { emissionScores(it, priors) }
         val path = viterbi(emissions)
 
         return spans.mapIndexed { index, (start, end) ->
@@ -94,7 +106,7 @@ class ChordRecognizer(
         bassVector: FloatArray?,
         preferFlats: Boolean,
     ): NoteSpelling? {
-        if (bassVector == null) return null
+        if (bassVector == null || !slashChords) return null
         val chordTones = candidate.template.intervals.map { Math.floorMod(candidate.root + it, 12) }.toSet()
 
         var best = -1
@@ -114,13 +126,63 @@ class ChordRecognizer(
         return NoteSpelling.fromPitchClass(best, preferFlats)
     }
 
-    /** Cosine similarity against every template, scaled by that template's prior. */
-    private fun emissionScores(observed: FloatArray): FloatArray {
+    /**
+     * How likely each chord is before hearing anything, given the key and the detail wanted.
+     *
+     * Computed once for the whole song rather than per beat: the key does not change within a run,
+     * and this is the tiebreaker the recognizer was missing. Chroma alone cannot separate G6 from
+     * Em7 — they are the same four pitch classes — nor Gmaj7 from Bm7, which share three of four.
+     * Knowing the piece is in G decides both, and the estimate was already being computed and used
+     * only to choose between sharps and flats.
+     *
+     */
+    private fun contextPriors(key: KeyContext?): FloatArray {
+        val priors = FloatArray(ChordTemplates.Candidates.size)
+        val scale = key?.let { scaleOf(it) }
+        // A weak key estimate should barely tilt anything; a confident one should tilt a lot.
+        val strength = ((key?.confidence ?: 0f).coerceIn(0f, 1f)) * KeyPriorStrength
+
+        for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
+            var prior = candidate.template.prior
+
+            if (scale != null) {
+                val degree = Math.floorMod(candidate.root - key.tonicPitchClass, 12)
+                val fit = when {
+                    degree == 0 -> TonicFit
+                    degree == 7 || degree == 5 -> DominantFit
+                    scale.contains(degree) -> DiatonicFit
+                    else -> ChromaticFit
+                }
+                prior *= 1f + strength * (fit - 1f)
+            }
+            priors[index] = prior
+        }
+        return priors
+    }
+
+    /** Semitones above the tonic that belong to the key. */
+    private fun scaleOf(key: KeyContext): Set<Int> =
+        if (key.isMinor) setOf(0, 2, 3, 5, 7, 8, 10) else setOf(0, 2, 4, 5, 7, 9, 11)
+
+    /**
+     * Cosine similarity against every template, scaled by that template's prior.
+     *
+     * The sixth or seventh a chord is named for counts for less than its triad, by
+     * [extensionPenalty]. That is deliberately not a penalty on the whole chord: damping the match
+     * outright makes a real Dm7 lose to plain F, because F major is a subset of Dm7 — the chart
+     * gets simpler by getting the root wrong, which is worse than the problem. Damping only the
+     * added note leaves root, third and fifth arguing at full strength, so a seventh that is really
+     * being played still wins and one resting on a passing tone falls back to its own triad.
+     */
+    private fun emissionScores(observed: FloatArray, priors: FloatArray): FloatArray {
         val scores = FloatArray(ChordTemplates.StateCount)
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
             var dot = 0f
-            for (pc in 0 until 12) dot += observed[pc] * candidate.vector[pc]
-            scores[index] = dot * candidate.template.prior
+            for (pc in 0 until 12) {
+                val weight = if (extensionPenalty != 1f && candidate.isExtensionTone(pc)) extensionPenalty else 1f
+                dot += observed[pc] * candidate.vector[pc] * weight
+            }
+            scores[index] = dot * priors[index]
         }
         // No chord wins when nothing has any energy or nothing matches anything.
         var energy = 0f
@@ -234,6 +296,15 @@ class ChordRecognizer(
     }
 
     private companion object {
+        /** How far a confident key estimate is allowed to move the odds. */
+        const val KeyPriorStrength = 0.9f
+
+        // Relative to 1.0, which is "the key says nothing about this chord".
+        const val TonicFit = 1.30f
+        const val DominantFit = 1.20f
+        const val DiatonicFit = 1.12f
+        const val ChromaticFit = 0.80f
+
         const val AlternateCount = 3
         const val BassPresenceThreshold = 0.25f
 
