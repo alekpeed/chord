@@ -289,8 +289,27 @@ internal class DecodeSink(private val targetSampleRate: Int, private val maxOutp
     val size: Int get() = output.size
     val isFull: Boolean get() = output.size >= maxOutputSamples
 
+    /**
+     * (Re)configures the decode target, preferring the most authoritative format seen so far.
+     *
+     * This is called twice in the ordinary case: once from the container's declared format before
+     * decoding starts, as a fallback for the rare codec that never reports its own; and again from
+     * the decoder's actual output format once decoding is under way, which is called out
+     * specifically because it can disagree with the container. HE-AAC is the textbook case — the
+     * container reports the AAC core rate, and the codec then produces audio at twice that once it
+     * applies spectral band replication. Trusting the container's guess after the codec has spoken
+     * silently doubled or halved playback speed for such a file, and with it every tempo estimate
+     * and chord timestamp computed downstream: a real recording playing back at the wrong speed
+     * looks to the analyzer exactly like a recording whose tempo and harmony are genuinely that far
+     * off, because as far as the analyzer can tell, they are.
+     *
+     * Once real audio has actually been produced under some configuration, that configuration is
+     * kept rather than reset — disturbing it would misalign or drop audio already decoded. In
+     * practice the decoder announces its real format before the first real buffer, so this only
+     * matters for the codecs, if any, that behave otherwise.
+     */
     fun configure(channels: Int, sourceRate: Int, expectedOutputSamples: Int) {
-        if (resampler != null) return
+        if (resampler != null && output.size > 0) return
         this.channels = channels.coerceAtLeast(1)
         frame = FloatArray(this.channels)
         carry = FloatArray(this.channels)
