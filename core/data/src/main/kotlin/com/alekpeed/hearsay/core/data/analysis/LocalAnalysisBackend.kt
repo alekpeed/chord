@@ -97,7 +97,14 @@ class LocalAnalysisBackend @Inject constructor(
                 onStage(StageType.MEDIA_PREPARATION, StageStatus.FAILED, 0f, "No audio was decoded")
                 return@withContext fail(AnalysisFailure.DecoderUnsupported(source.mimeType))
             }
-            onStage(StageType.MEDIA_PREPARATION, StageStatus.COMPLETE, 1f, null)
+            // The decoded duration, next to the file's own. A decode running at the wrong rate
+            // compresses or stretches everything downstream, and this line is how that shows.
+            onStage(
+                StageType.MEDIA_PREPARATION,
+                StageStatus.COMPLETE,
+                1f,
+                "Decoded ${formatDuration(decoded.durationMs)} of ${formatDuration(project.project.durationMs)}",
+            )
 
             // The waveform cache is not built yet; skipping it honestly beats reporting it done.
             onStage(StageType.WAVEFORM, StageStatus.SKIPPED, 1f, "Waveform cache is not implemented yet")
@@ -120,7 +127,7 @@ class LocalAnalysisBackend @Inject constructor(
             }
 
             onStage(StageType.SEPARATION, StageStatus.COMPLETE, 1f, null)
-            onStage(StageType.RHYTHM, StageStatus.COMPLETE, 1f, "${result.tempoBpm.toInt()} BPM, ${result.beatsPerMeasure}/4")
+            onStage(StageType.RHYTHM, StageStatus.COMPLETE, 1f, rhythmSummary(result))
             onStage(
                 StageType.TONAL,
                 StageStatus.COMPLETE,
@@ -205,6 +212,31 @@ class LocalAnalysisBackend @Inject constructor(
             }
         }
         if (alternates.isNotEmpty()) chartRepository.replaceAlternatives(projectId, alternates)
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val totalSeconds = ms / 1000
+        return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
+    }
+
+    /**
+     * The rhythm verdict with the tempos it beat.
+     *
+     * Two recordings reported the same wrong tempo, and nothing on any screen could say whether the
+     * right answer had been a close second or never considered at all. This line is that evidence:
+     * "135 BPM, 4/4 · also weighed 90 (97%), 68 (81%)" tells a person — and whoever debugs this
+     * next — exactly what the estimator saw.
+     */
+    private fun rhythmSummary(result: com.alekpeed.hearsay.core.audio.AnalysisResult): String {
+        val base = "${result.tempoBpm.toInt()} BPM, ${result.beatsPerMeasure}/4"
+        val losers = result.tempoCandidates
+            .filter { kotlin.math.abs(it.bpm - result.tempoBpm) > 2f }
+            .take(2)
+        if (losers.isEmpty()) return base
+        val weighed = losers.joinToString(", ") {
+            "${it.bpm.toInt()} (${(it.relativeScore * 100).toInt()}%)"
+        }
+        return "$base · also weighed $weighed"
     }
 
     private fun fail(failure: AnalysisFailure): Result<Unit> = Result.failure(AnalysisException(failure))

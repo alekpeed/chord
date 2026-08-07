@@ -8,6 +8,16 @@ import kotlin.math.roundToInt
 data class TempoEstimate(val bpm: Float, val confidence: Float)
 
 /**
+ * A tempo the estimator seriously considered, with how it scored against the winner.
+ *
+ * Carried out of the analysis so the app can show what the decision actually was. Two recordings
+ * reported the same wrong tempo while every synthetic fixture measured correctly, and nothing in
+ * the product could say how close the right answer had come — a screenshot showed the verdict but
+ * not the trial. [relativeScore] is 1 for the winner and the losers' share of its score.
+ */
+data class TempoCandidate(val bpm: Float, val relativeScore: Float)
+
+/**
  * Tempo through a recording, rather than one number for the whole of it.
  *
  * A single tempo lays the whole beat grid against one period, so a recording that drifts, opens in
@@ -80,21 +90,38 @@ data class TempoSpan(val startFrame: Int, val endFrame: Int, val bpm: Float)
  * Tempo by autocorrelation of the onset envelope, biased toward how people actually count.
  *
  * Autocorrelation alone is ambiguous by factors of two — a track at 140 correlates just as well at
- * 70. The log-Gaussian bias around a preferred tempo is what resolves it, and it is the same trick
- * that stops a slow ballad being reported at double time.
+ * 70. A log-Gaussian bias around a preferred tempo breaks those ties, and a tracked-grid check
+ * corrects the one mistake the bias itself used to cause.
  */
 object TempoEstimator {
 
     private const val MinBpm = 50.0
     private const val MaxBpm = 210.0
-    private const val PreferredBpm = 120.0
+
+    /**
+     * Centered at 100, not 120.
+     *
+     * The center is where ties break, and 120 broke them against slow songs: for a 67 BPM ballad
+     * the double at 135 sits far nearer 120 than 67 does, so the bias favored the double by about
+     * 17% — more than the correlation margin whenever a recording fills the space between its
+     * beats. Two real recordings near 70 and 90 BPM both came back as 135; a bias centered at 100
+     * is close to neutral across exactly that contested range, and pop tempo distributions center
+     * near 100 anyway.
+     */
+    private const val PreferredBpm = 100.0
     private const val BiasWidth = 1.0
 
-    fun estimate(envelope: OnsetEnvelope): TempoEstimate {
+    fun estimate(envelope: OnsetEnvelope): TempoEstimate = estimateWithCandidates(envelope).first
+
+    /**
+     * The estimate plus the tempos it beat, so callers can show the decision rather than assert it.
+     */
+    fun estimateWithCandidates(envelope: OnsetEnvelope): Pair<TempoEstimate, List<TempoCandidate>> {
         val minLag = (60.0 / MaxBpm / envelope.hopSeconds).roundToInt().coerceAtLeast(1)
         val maxLag = (60.0 / MinBpm / envelope.hopSeconds).roundToInt().coerceAtMost(envelope.size - 1)
-        if (maxLag <= minLag) return TempoEstimate(PreferredBpm.toFloat(), 0f)
+        if (maxLag <= minLag) return TempoEstimate(PreferredBpm.toFloat(), 0f) to emptyList()
 
+        val scores = FloatArray(maxLag - minLag + 1)
         var bestLag = minLag
         var bestScore = Float.NEGATIVE_INFINITY
         var total = 0.0
@@ -102,9 +129,8 @@ object TempoEstimator {
         for (lag in minLag..maxLag) {
             var correlation = 0f
             for (i in lag until envelope.size) correlation += envelope.values[i] * envelope.values[i - lag]
-            val bpm = 60.0 / (lag * envelope.hopSeconds)
-            val bias = ln(bpm / PreferredBpm) / BiasWidth
-            val score = correlation * kotlin.math.exp(-0.5 * bias * bias).toFloat()
+            val score = correlation * countingBias(lag, envelope.hopSeconds)
+            scores[lag - minLag] = score
             total += score.toDouble()
             if (score > bestScore) {
                 bestScore = score
@@ -112,12 +138,105 @@ object TempoEstimator {
             }
         }
 
-        val bpm = 60.0 / (bestLag * envelope.hopSeconds)
-        // Confidence is how much the winner stands out from the field, not its raw magnitude.
+        // The winner has to survive a check against half its rate before it is believed.
+        val settled = settleHalfTime(envelope, 60.0 / (bestLag * envelope.hopSeconds))
+
+        // Confidence is how much the winner stands out from the field, tempered by how decisively
+        // it survived the half-time check — the one place a towering peak can still be wrong.
         val mean = (total / (maxLag - minLag + 1)).toFloat()
-        val confidence = if (mean > 1e-6f) ((bestScore / mean - 1f) / 4f).coerceIn(0f, 1f) else 0f
-        return TempoEstimate(bpm.toFloat(), confidence)
+        val prominence = if (mean > 1e-6f) ((bestScore / mean - 1f) / 4f).coerceIn(0f, 1f) else 0f
+        val confidence = (prominence * settled.margin).coerceIn(0f, 1f)
+
+        return TempoEstimate(settled.bpm.toFloat(), confidence) to
+            topCandidates(scores, minLag, envelope.hopSeconds, bestScore)
     }
+
+    private fun countingBias(lag: Int, hopSeconds: Double): Float {
+        val bpm = 60.0 / (lag * hopSeconds)
+        val bias = ln(bpm / PreferredBpm) / BiasWidth
+        return kotlin.math.exp(-0.5 * bias * bias).toFloat()
+    }
+
+    /** The distinct peaks of the score curve, so a near-miss is visible to whoever asks. */
+    private fun topCandidates(
+        scores: FloatArray,
+        minLag: Int,
+        hopSeconds: Double,
+        bestScore: Float,
+    ): List<TempoCandidate> {
+        if (bestScore <= 0f) return emptyList()
+        val peaks = mutableListOf<Pair<Int, Float>>()
+        for (i in 1 until scores.size - 1) {
+            if (scores[i] >= scores[i - 1] && scores[i] >= scores[i + 1]) peaks += (minLag + i) to scores[i]
+        }
+        return peaks.sortedByDescending { it.second }
+            .take(CandidateCount)
+            .map { (lag, score) ->
+                TempoCandidate(
+                    bpm = (60.0 / (lag * hopSeconds)).toFloat(),
+                    relativeScore = (score / bestScore).coerceIn(0f, 1f),
+                )
+            }
+    }
+
+    private class Settled(val bpm: Double, val margin: Float)
+
+    /**
+     * Decides whether the winning tempo is actually counting a subdivision of the real one.
+     *
+     * A recording that fills the space between its beats correlates almost as well at double time,
+     * and a preference curve cannot be trusted to break that tie — moving its center only moves
+     * which songs it breaks. What settles it is evidence: lay the winner's own beat grid over the
+     * onsets and compare each beat with its neighbor. Real beats all carry energy, so consecutive
+     * strengths are comparable; a grid running at twice the music's rate lands every other point
+     * between the beats, and consecutive strengths alternate. The grid comes from the same dynamic-
+     * programming tracker the analysis uses, which snaps to the onsets — so drift, missing beats
+     * and expressive timing are absorbed instead of corrupting the comparison.
+     *
+     * The consecutive-pair median is deliberately local. A global even/odd split falls apart the
+     * first time the tracker inserts or drops a beat, because parity flips for everything after;
+     * neighboring pairs cannot be desynchronized that way.
+     */
+    private fun settleHalfTime(envelope: OnsetEnvelope, bpm: Double): Settled {
+        if (bpm / 2 < MinBpm) return Settled(bpm, 1f)
+
+        val beats = BeatTracker.track(envelope, bpm.toFloat())
+        if (beats.size < MinBeatsForSettle) return Settled(bpm, 1f)
+
+        val strengths = beats.map { frame ->
+            var best = 0f
+            for (offset in -1..1) {
+                val index = frame + offset
+                if (index in envelope.values.indices) best = max(best, envelope.values[index])
+            }
+            best
+        }
+        val ratios = strengths.zipWithNext { a, b ->
+            val stronger = max(a, b)
+            if (stronger > 1e-9f) kotlin.math.min(a, b) / stronger else 1f
+        }.sorted()
+        val median = ratios[ratios.size / 2]
+
+        return if (median < HalfTimeThreshold) {
+            // Every other beat of this grid is not really there: the music is at half this rate.
+            Settled(bpm / 2, ((HalfTimeThreshold - median) / HalfTimeThreshold).coerceIn(0.15f, 1f))
+        } else {
+            Settled(bpm, ((median - HalfTimeThreshold) / (1f - HalfTimeThreshold)).coerceIn(0.15f, 1f))
+        }
+    }
+
+    /**
+     * Below this, alternate beats are too weak to all be beats.
+     *
+     * Set well under the ~0.6 that a strongly accented but genuine grid produces — a 4/4 click with
+     * a loud downbeat must not be halved — and well over the near-zero that landing between a
+     * ballad's beats produces.
+     */
+    private const val HalfTimeThreshold = 0.40f
+
+    private const val MinBeatsForSettle = 12
+
+    private const val CandidateCount = 3
 
     /**
      * Tempo measured in overlapping windows and then decoded as a path.
@@ -140,7 +259,15 @@ object TempoEstimator {
 
         val windowFrames = (WindowSeconds / envelope.hopSeconds).roundToInt().coerceAtLeast(maxLag * 2)
         val hopFrames = (WindowHopSeconds / envelope.hopSeconds).roundToInt().coerceAtLeast(1)
-        val lags = (minLag..maxLag).toList()
+
+        // Anchored to the whole-recording estimate, which has already survived the half-time check.
+        // Windows are free to follow drift inside the band; they are not free to re-decide that the
+        // recording is at double or half time, because a window cannot see enough to judge that and
+        // the median of window-level mistakes is what the app reports as the tempo.
+        val anchorLag = 60.0 / estimate(envelope).bpm / envelope.hopSeconds
+        val lowLag = (anchorLag / DriftRange).roundToInt().coerceAtLeast(minLag)
+        val highLag = (anchorLag * DriftRange).roundToInt().coerceAtMost(maxLag)
+        val lags = if (highLag > lowLag) (lowLag..highLag).toList() else (minLag..maxLag).toList()
 
         val windowStarts = mutableListOf<Int>()
         var start = 0
@@ -183,9 +310,7 @@ object TempoEstimator {
                 correlation += envelope.values[i] * envelope.values[i - lag]
                 i++
             }
-            val bpm = 60.0 / (lag * envelope.hopSeconds)
-            val bias = ln(bpm / PreferredBpm) / BiasWidth
-            out[index] = correlation * kotlin.math.exp(-0.5 * bias * bias).toFloat()
+            out[index] = correlation * countingBias(lag, envelope.hopSeconds)
         }
         // Normalized per window, so a loud passage does not simply outvote a quiet one.
         val peak = out.maxOrNull() ?: 0f
@@ -243,6 +368,14 @@ object TempoEstimator {
         val b = lags[path[upper]].toFloat()
         return a + (b - a) * position
     }
+
+    /**
+     * How far the curve may drift from the whole-recording tempo, as a ratio.
+     *
+     * Wide enough for real rubato and a band pushing or dragging; far short of the factor of two
+     * that would let a window re-decide the metrical level.
+     */
+    private const val DriftRange = 1.35
 
     /** Long enough to hold several bars, short enough to notice the tempo moving. */
     private const val WindowSeconds = 6.0

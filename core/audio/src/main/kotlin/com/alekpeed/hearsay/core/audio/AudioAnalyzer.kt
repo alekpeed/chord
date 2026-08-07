@@ -14,6 +14,7 @@ import com.alekpeed.hearsay.core.audio.harmony.chordChangeStrength
 import com.alekpeed.hearsay.core.audio.rhythm.BeatTracker
 import com.alekpeed.hearsay.core.audio.rhythm.DownbeatEstimator
 import com.alekpeed.hearsay.core.audio.rhythm.OnsetEnvelope
+import com.alekpeed.hearsay.core.audio.rhythm.TempoCandidate
 import com.alekpeed.hearsay.core.audio.rhythm.TempoCurve
 import com.alekpeed.hearsay.core.audio.rhythm.TempoEstimate
 import com.alekpeed.hearsay.core.audio.rhythm.TempoEstimator
@@ -53,6 +54,8 @@ data class AnalysisResult(
     val chords: List<RecognizedChord>,
     val bassNotes: List<BassTracker.BassNote>,
     val warnings: List<String>,
+    /** The tempos the estimator weighed, winner first — the decision, not just the verdict. */
+    val tempoCandidates: List<TempoCandidate> = emptyList(),
 )
 
 /**
@@ -229,6 +232,7 @@ class AudioAnalyzer(
             chords = chords,
             bassNotes = bassNotes,
             warnings = warnings,
+            tempoCandidates = rhythm.tempoCandidates,
         )
     }
 
@@ -238,6 +242,7 @@ class AudioAnalyzer(
         val beatFrames: List<Int>,
         val beatTimesMs: List<Long>,
         val curve: TempoCurve,
+        val tempoCandidates: List<TempoCandidate>,
     )
 
     private class SeparatedFeatures(val envelope: OnsetEnvelope, val chroma: Chromagram)
@@ -280,7 +285,7 @@ class AudioAnalyzer(
         // followed by a constant period, and the grid sliding out of phase is what makes the
         // playing position move at the wrong speed against the music.
         val curve = TempoEstimator.curve(envelope)
-        val global = TempoEstimator.estimate(envelope)
+        val (global, candidates) = TempoEstimator.estimateWithCandidates(envelope)
         val beatFrames = BeatTracker.track(envelope, curve)
         val tempo = TempoEstimate(curve.medianBpm.takeIf { it > 0f } ?: global.bpm, global.confidence)
         return RhythmAnalysis(
@@ -289,6 +294,7 @@ class AudioAnalyzer(
             beatFrames = beatFrames,
             beatTimesMs = beatFrames.map { envelope.timeMsOfFrame(it) },
             curve = curve,
+            tempoCandidates = candidates,
         )
     }
 
