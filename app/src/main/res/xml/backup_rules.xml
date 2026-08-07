@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The library database and a user's corrections are worth backing up. Copies of source audio and
+  generated artifacts are not: they can be large, and they can be recreated from the originals.
+-->
+<full-backup-content>
+    <include domain="database" path="." />
+    <include domain="sharedpref" path="." />
+    <exclude domain="file" path="sources/" />
+</full-backup-content>
