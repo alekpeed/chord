@@ -93,6 +93,17 @@ class EarTrainingViewModelTest {
         override suspend fun confirmChord(projectId: String, eventId: String, confirmed: Boolean) = Unit
         override suspend fun restoreMachineResult(projectId: String): String? = null
         override suspend fun setActiveRevision(projectId: String, revisionId: String) = Unit
+        override fun observeAlternatives(projectId: String) = MutableStateFlow(
+            emptyMap<String, List<com.alekpeed.hearsay.core.model.repository.ChordAlternative>>(),
+        )
+        override suspend fun replaceAlternatives(
+            projectId: String,
+            alternatives: List<com.alekpeed.hearsay.core.model.repository.ChordAlternative>,
+        ) = Unit
+        override suspend fun splitChordRegion(projectId: String, eventId: String, atMs: Long) = "r1"
+        override suspend fun mergeWithNext(projectId: String, eventId: String) = "r1"
+        override suspend fun moveBoundary(projectId: String, eventId: String, newStartMs: Long) = "r1"
+        override suspend fun renameSection(projectId: String, sectionId: String, label: String) = "r1"
     }
 
     private var now = 1_000L

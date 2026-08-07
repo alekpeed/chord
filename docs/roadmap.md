@@ -33,46 +33,59 @@ column priority, loop, speed, display transposition, hand-entered chart data, ch
 implementation is unvalidated and deliberately unwritten. Audio transposition is also unresolved:
 the current transpose control changes the chord symbols shown, not the sounding pitch.
 
-## Milestone 3 — Processing framework
+## Milestone 3 — Processing framework ✅ (mostly)
 
-Stage DAG, progress UI, foreground execution, WorkManager integration, cancellation, retry,
-checkpoint persistence, artifact registry, model registry and download manager.
+*Done:* jobs and stages persisted as database rows, foreground service with live progress and a Stop
+action, per-stage status and messages, cancellation, orphaned-job recovery after process death, a
+`ProcessingBackendGateway` interface with a local implementation.
 
-*Exit criteria:* simulated long jobs survive process death; completed stages are not repeated;
-pause and cancel are visible and reliable.
+*Outstanding:* stage-level *resume* — a killed job records which stages finished but still restarts
+from the beginning. WorkManager for deferred work (model downloads, cleanup, export). Artifact
+registry and model download manager, which have nothing to manage until a model exists.
 
-## Milestone 4 — Baseline audio analysis
+## Milestone 4 — Baseline audio analysis ✅
 
-Beat and tempo integration, broad stem separation, baseline chord recognition, vocals excluded from
-chord analysis, confidence storage, generated chart rows.
+*Done:* tempo, beat and downbeat tracking, meter estimation, harmonic/percussive separation,
+beat-synchronous chord recognition over 22 chord types with Viterbi decoding, key estimation,
+section detection, bass pitch tracking, per-chord confidence, and alternates stored alongside the
+chosen chord.
 
-*Exit criteria:* one local file completes end to end; output is editable; raw model output is preserved.
+*Exit criteria met* against synthesized audio: a file completes end to end, output is editable, and
+the machine result is preserved under every correction.
 
-## Milestone 5 — Detailed stems and note analysis
+*Outstanding:* accuracy against real recordings is unmeasured, and vocals are reduced by mid-side
+processing rather than separated.
 
-Bass, acoustic piano, electric piano, guitar, remaining target stems, note transcription, bass line,
-voicing panel, octave display.
+## Milestone 5 — Detailed stems and note analysis — not started
 
-*Exit criteria:* unavailable or experimental stems are clearly labelled; acoustic and electric piano
-are separate in both the model and the UI.
+Requires deep-learning separation. The ten target stems, note transcription per instrument, the
+voicing panel and octave display all wait on that. This is the largest remaining piece of the
+product, and per `docs/model-registry.md` no model ships until it is benchmarked on real hardware.
 
-## Milestone 6 — Advanced correction
+## Milestone 6 — Advanced correction ✅ (partly)
 
-Waveform editor, beat correction, chord-boundary editing, section editing, alternate chord selection,
-revision history UI, selective reprocessing.
+*Done:* alternate chord selection from what the analysis also heard, splitting a region at the
+playhead, merging with the next region, moving a boundary, renaming a section, and revision history
+with restore — every structural edit forks a user revision exactly as a chord correction does.
 
-## Milestone 7 — Ear training
+*Outstanding:* the waveform editor, beat-grid correction, and selective reprocessing of a single
+stage.
 
-Eligibility engine, chord quality, root, bass and inversion, missing chord and voicing-note
-questions, isolated and full-mix toggle, session history.
+## Milestone 7 — Ear training ✅
 
-*Exit criteria:* no low-confidence unconfirmed item is presented as fact; every result links back to
-its source event; sessions work offline.
+*Done:* the eligibility engine, all six exercise types, replay, reveal with the confidence at
+generation time and a link back to the source bar, per-skill history and a weakest-skill session.
 
-## Milestone 8 — Library intelligence and export
+*Outstanding:* isolated-stem playback, which needs stems. The control exists and is disabled with
+that reason shown.
 
-Chord and metadata search, duplicate detection, saved loops, chart export, stem export, JSON project
-export, project archive, storage management.
+## Milestone 8 — Library intelligence and export ✅ (partly)
+
+*Done:* metadata search, duplicate detection by checksum, chord-symbol queries in the database, chart
+export as a readable text lead sheet and as structured JSON that keeps chords, confidence and
+provenance intact.
+
+*Outstanding:* the export UI, saved-loop UI, stem export, project archive, storage management.
 
 ## Milestone 9 — Quality and optimization
 

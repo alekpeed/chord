@@ -51,14 +51,26 @@ interface MediaImportRepository {
     suspend fun probe(uri: String): MediaAsset?
 }
 
+/** A chord the analysis also considered, kept so the user can pick it instead. */
+data class ChordAlternative(
+    val chordEventId: String,
+    val rank: Int,
+    val chord: Chord,
+    val displaySymbol: String,
+    val confidence: Float,
+)
+
 /**
  * Chart data for the active revision of a project.
  *
- * Edits are additive: [updateChord] records a correction against a user revision and leaves the
- * machine result reachable through [revisions].
+ * Edits are additive: every one of them records a correction against a user revision and leaves
+ * the machine result reachable through [revisions].
  */
 interface ChartRepository {
     fun observeChart(projectId: String): Flow<SongChart>
+
+    /** Alternates for the active revision, keyed by chord event id. */
+    fun observeAlternatives(projectId: String): Flow<Map<String, List<ChordAlternative>>>
 
     suspend fun revisions(projectId: String): List<Revision>
     suspend fun replaceChart(projectId: String, chart: SongChart, label: String, revisionSourceIsUser: Boolean): String
@@ -66,6 +78,24 @@ interface ChartRepository {
     suspend fun confirmChord(projectId: String, eventId: String, confirmed: Boolean)
     suspend fun restoreMachineResult(projectId: String): String?
     suspend fun setActiveRevision(projectId: String, revisionId: String)
+
+    /** Stores what else the analysis heard, alongside what it picked. */
+    suspend fun replaceAlternatives(projectId: String, alternatives: List<ChordAlternative>)
+
+    // ---- region editing ------------------------------------------------------------------------
+    // Each of these forks a user revision the same way a chord correction does, so no structural
+    // edit destroys the machine's account of the song either.
+
+    /** Splits a region in two at [atMs]; both halves keep the original chord until edited. */
+    suspend fun splitChordRegion(projectId: String, eventId: String, atMs: Long): String
+
+    /** Merges a region with the one after it, keeping this region's chord. */
+    suspend fun mergeWithNext(projectId: String, eventId: String): String
+
+    /** Moves the boundary between a region and the one before it. */
+    suspend fun moveBoundary(projectId: String, eventId: String, newStartMs: Long): String
+
+    suspend fun renameSection(projectId: String, sectionId: String, label: String): String
 }
 
 /** Practice state that outlives a session: saved loops, speed and transposition per project. */

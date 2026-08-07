@@ -329,3 +329,30 @@ data class EarTrainingAttemptEntity(
     val isolatedStemUsed: Boolean,
     val responseTimeMs: Long,
 )
+
+/**
+ * A chord the analysis also considered.
+ *
+ * Alternates are the product's core claim made concrete: the app shows what else it heard rather
+ * than presenting one answer as fact. They are stored per chord event and die with it.
+ */
+@Entity(
+    tableName = "chord_alternatives",
+    foreignKeys = [
+        ForeignKey(
+            entity = ChordEventEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["chordEventId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("chordEventId")],
+)
+data class ChordAlternativeEntity(
+    @PrimaryKey val id: String,
+    val chordEventId: String,
+    val rank: Int,
+    val chordJson: String,
+    val displaySymbol: String,
+    val confidence: Float,
+)

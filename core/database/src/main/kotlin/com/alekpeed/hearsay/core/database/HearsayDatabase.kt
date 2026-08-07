@@ -15,6 +15,7 @@ import com.alekpeed.hearsay.core.database.dao.RevisionDao
 import com.alekpeed.hearsay.core.database.entity.AnalysisJobEntity
 import com.alekpeed.hearsay.core.database.entity.AnalysisStageEntity
 import com.alekpeed.hearsay.core.database.entity.BeatEventEntity
+import com.alekpeed.hearsay.core.database.entity.ChordAlternativeEntity
 import com.alekpeed.hearsay.core.database.entity.ChordEventEntity
 import com.alekpeed.hearsay.core.database.entity.EarTrainingAttemptEntity
 import com.alekpeed.hearsay.core.database.entity.EarTrainingSessionEntity
@@ -50,6 +51,7 @@ class StringListConverter {
         AnalysisStageEntity::class,
         EarTrainingSessionEntity::class,
         EarTrainingAttemptEntity::class,
+        ChordAlternativeEntity::class,
     ],
     version = HearsayDatabase.Version,
     exportSchema = true,
@@ -65,7 +67,7 @@ abstract class HearsayDatabase : RoomDatabase() {
     abstract fun earTrainingDao(): EarTrainingDao
 
     companion object {
-        const val Version = 3
+        const val Version = 4
         const val Name = "hearsay.db"
 
         /**
@@ -169,6 +171,31 @@ abstract class HearsayDatabase : RoomDatabase() {
                 connection.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_ear_training_attempts_exerciseType` " +
                         "ON `ear_training_attempts` (`exerciseType`)",
+                )
+            }
+        }
+
+        /** Adds the alternates the analysis considered but did not pick. */
+        val Migration3To4 = object : Migration(3, 4) {
+            override fun migrate(connection: SupportSQLiteDatabase) {
+                connection.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `chord_alternatives` (
+                        `id` TEXT NOT NULL,
+                        `chordEventId` TEXT NOT NULL,
+                        `rank` INTEGER NOT NULL,
+                        `chordJson` TEXT NOT NULL,
+                        `displaySymbol` TEXT NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`chordEventId`) REFERENCES `chord_events`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                connection.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_chord_alternatives_chordEventId` " +
+                        "ON `chord_alternatives` (`chordEventId`)",
                 )
             }
         }

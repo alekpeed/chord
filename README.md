@@ -13,13 +13,12 @@ be read at arm's length from a music stand.
 
 ## Status
 
-This repository currently contains **Milestone 0 plus the first vertical slice**: the architecture,
-the local library, Media3 playback, and the synchronized chord table.
+**The app listens to a recording and produces a chord chart.** Import a file you own, press Analyse,
+and it works out the beat, the bar lines, the key, the sections and the chords — on device, with a
+confidence on every chord and the runners-up kept so you can disagree.
 
-There is **no automatic analysis yet**, by design — the roadmap puts playback, projects, correction
-and evaluation before any model, so that analysis output has somewhere trustworthy to land. A
-project you import starts with an honest empty chart, and you can lay out bars by hand and type
-changes into them.
+The analysis is signal processing, not a trained model. It reads a clear mix far better than a dense
+one, and it says how sure it is rather than presenting a guess as a fact.
 
 | Area | State |
 | --- | --- |
@@ -29,9 +28,20 @@ changes into them.
 | Storage Access Framework import, reference or managed copy | Working, not yet exercised on a device |
 | Media3 playback, media session, background playback | Working, not yet exercised on a device |
 | Synchronized chord table, current-row tracking, loop / speed / transpose | Working, unit tested |
-| Metronome and count-in | Interface only — latency approach not yet validated |
-| Stem separation, beat tracking, chord recognition | Not started |
-| Ear training | Not started |
+| Tempo, beat and downbeat tracking | Working, verified against synthesized audio |
+| Chord recognition with alternates and confidence | Working, verified against synthesized audio |
+| Key and section detection | Working, verified against synthesized audio |
+| Harmonic/percussive separation | Working — not the ten target stems |
+| Processing queue, foreground service, checkpointed stages | Working, not yet exercised on a device |
+| Chord correction, alternates, split / merge, revisions | Working, unit tested |
+| Ear training — six exercise types from your own songs | Working, unit tested |
+| Chart export, text and structured JSON | Working, unit tested |
+| Deep-learning stem separation (ten target stems) | Not started |
+| Note transcription, waveform editor, metronome | Not started |
+
+**Real-world accuracy is unmeasured.** The recogniser is proven against synthesized audio with known
+ground truth; nothing has been run against real recordings with published annotations, and nothing
+at all has run on a physical device. See `docs/testing.md`.
 
 See `docs/roadmap.md` for what each milestone delivers and `docs/milestones/` for the checklists.
 
@@ -53,14 +63,21 @@ or set `ANDROID_HOME`.
 
 ```text
 :app                    navigation shell, DI graph, theme
-:core:model             pure Kotlin domain — chords, timeline, chart rows, abstractions
+:core:model             pure Kotlin domain — chords, timeline, exercises, export, abstractions
+:core:audio             pure Kotlin DSP — FFT, chroma, beat tracking, chord recognition
 :core:common            dispatchers, time, cross-cutting utilities
-:core:database          Room entities, DAOs, schema
-:core:data              repository implementations, use cases, mappers
-:core:media             Storage Access Framework import, Media3 playback
+:core:database          Room entities, DAOs, schema, migrations
+:core:data              repository implementations, analysis backend, use cases
+:core:media             Storage Access Framework import, PCM decoding, Media3 playback
 :feature:library        the local library and import flow
-:feature:performance    the chord table and practice controls
+:feature:performance    the chord table, practice controls and correction
+:feature:processing     the analysis queue and its foreground service
+:feature:eartraining    exercises generated from analysed songs
 ```
+
+`:core:model` and `:core:audio` are plain Kotlin modules with no Android dependency. That is a
+constraint, not a convenience: it means the music theory and every analysis algorithm run under an
+ordinary JVM test in milliseconds, with no emulator in the loop.
 
 Dependencies run one way: UI → use cases → repository interfaces → storage, media and (later) model
 runtimes. Feature modules depend on abstractions in `:core:model`, never on Room, ExoPlayer or a

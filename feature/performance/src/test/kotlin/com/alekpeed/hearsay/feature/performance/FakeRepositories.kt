@@ -109,6 +109,40 @@ class FakeChartRepository(chart: SongChart = SongChart.Empty) : ChartRepository 
     }
 
     override suspend fun setActiveRevision(projectId: String, revisionId: String) = Unit
+
+    override fun observeAlternatives(projectId: String) =
+        kotlinx.coroutines.flow.MutableStateFlow(alternatives)
+
+    var alternatives: Map<String, List<com.alekpeed.hearsay.core.model.repository.ChordAlternative>> = emptyMap()
+
+    override suspend fun replaceAlternatives(
+        projectId: String,
+        alternatives: List<com.alekpeed.hearsay.core.model.repository.ChordAlternative>,
+    ) {
+        this.alternatives = alternatives.groupBy { it.chordEventId }
+    }
+
+    override suspend fun splitChordRegion(projectId: String, eventId: String, atMs: Long): String {
+        edits += "split:$eventId@$atMs"
+        return "r2"
+    }
+
+    override suspend fun mergeWithNext(projectId: String, eventId: String): String {
+        edits += "merge:$eventId"
+        return "r2"
+    }
+
+    override suspend fun moveBoundary(projectId: String, eventId: String, newStartMs: Long): String {
+        edits += "boundary:$eventId@$newStartMs"
+        return "r2"
+    }
+
+    override suspend fun renameSection(projectId: String, sectionId: String, label: String): String {
+        edits += "section:$sectionId=$label"
+        return "r2"
+    }
+
+    val edits = mutableListOf<String>()
 }
 
 class FakeAnalysisRepository(job: AnalysisJob? = null) : AnalysisRepository {

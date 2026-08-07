@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
 import com.alekpeed.hearsay.core.database.entity.BeatEventEntity
+import com.alekpeed.hearsay.core.database.entity.ChordAlternativeEntity
 import com.alekpeed.hearsay.core.database.entity.ChordEventEntity
 import com.alekpeed.hearsay.core.database.entity.MediaAssetEntity
 import com.alekpeed.hearsay.core.database.entity.ProjectEntity
@@ -124,6 +125,47 @@ interface ChartDao {
 
     @Query("UPDATE chord_events SET userConfirmed = :confirmed WHERE id = :eventId")
     suspend fun setConfirmed(eventId: String, confirmed: Boolean)
+
+    @Query("SELECT * FROM chord_alternatives WHERE chordEventId = :eventId ORDER BY rank ASC")
+    suspend fun alternatives(eventId: String): List<ChordAlternativeEntity>
+
+    @Query(
+        """
+        SELECT * FROM chord_alternatives
+        WHERE chordEventId IN (SELECT id FROM chord_events WHERE revisionId = :revisionId)
+        ORDER BY rank ASC
+        """,
+    )
+    fun observeAlternatives(revisionId: String): Flow<List<ChordAlternativeEntity>>
+
+    @Upsert
+    suspend fun upsertAlternatives(alternatives: List<ChordAlternativeEntity>)
+
+    @Query("DELETE FROM chord_events WHERE id = :eventId")
+    suspend fun deleteChord(eventId: String)
+
+    /** Every chord symbol in the library, for searching by harmony rather than by title. */
+    @Query(
+        """
+        SELECT DISTINCT c.displaySymbol FROM chord_events c
+        INNER JOIN revisions r ON c.revisionId = r.id
+        INNER JOIN projects p ON r.projectId = p.id AND p.activeRevisionId = r.id
+        WHERE c.displaySymbol LIKE :query || '%'
+        ORDER BY c.displaySymbol ASC LIMIT 20
+        """,
+    )
+    suspend fun chordSymbolsLike(query: String): List<String>
+
+    /** Projects whose active revision contains a given chord symbol. */
+    @Query(
+        """
+        SELECT DISTINCT p.id FROM projects p
+        INNER JOIN revisions r ON p.activeRevisionId = r.id
+        INNER JOIN chord_events c ON c.revisionId = r.id
+        WHERE c.displaySymbol = :symbol
+        """,
+    )
+    suspend fun projectIdsContainingChord(symbol: String): List<String>
 
     /**
      * Copies a whole revision's chart onto a new revision.

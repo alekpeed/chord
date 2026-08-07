@@ -13,6 +13,7 @@ import com.alekpeed.hearsay.core.model.project.AnalysisProfile
 import com.alekpeed.hearsay.core.model.project.ProjectWithSource
 import com.alekpeed.hearsay.core.model.project.SourceAvailability
 import com.alekpeed.hearsay.core.model.repository.ChartRepository
+import com.alekpeed.hearsay.core.model.repository.ChordAlternative
 import com.alekpeed.hearsay.core.model.repository.ProjectRepository
 import com.alekpeed.hearsay.core.model.timeline.ChartDisplayOptions
 import com.alekpeed.hearsay.core.model.timeline.ChartRow
@@ -75,6 +76,9 @@ class PerformanceViewModel @Inject constructor(
     private val analysis = analysisRepository.observeJob(projectId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(StopTimeoutMs), null)
 
+    private val alternatives = chartRepository.observeAlternatives(projectId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(StopTimeoutMs), emptyMap())
+
     val uiState: StateFlow<PerformanceUiState> = combine(
         combine(project, rows, chart) { project, rows, chart -> Triple(project, rows, chart) },
         playbackController.state,
@@ -82,8 +86,8 @@ class PerformanceViewModel @Inject constructor(
         combine(autoScroll, chordsHidden, selectedRowIndex) { auto, hidden, selected ->
             Triple(auto, hidden, selected)
         },
-        analysis,
-    ) { (project, rows, chart), playback, options, (auto, hidden, selected), job ->
+        combine(analysis, alternatives) { job, alternates -> job to alternates },
+    ) { (project, rows, chart), playback, options, (auto, hidden, selected), (job, alternates) ->
         when {
             project == null -> PerformanceUiState.Loading
             else -> PerformanceUiState.Ready(
@@ -97,6 +101,7 @@ class PerformanceViewModel @Inject constructor(
                 chordsHidden = hidden,
                 sourceProblem = sourceProblemOf(project, playback.error),
                 analysis = job,
+                alternatives = alternates,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(StopTimeoutMs), PerformanceUiState.Loading)
@@ -195,6 +200,30 @@ class PerformanceViewModel @Inject constructor(
 
         override fun onRestoreMachineResult() {
             viewModelScope.launch { chartRepository.restoreMachineResult(projectId) }
+        }
+
+        override fun onSelectAlternative(rowIndex: Int, alternative: ChordAlternative) {
+            val row = rows.value.getOrNull(rowIndex) ?: return
+            viewModelScope.launch { chartRepository.updateChord(projectId, row.eventId, alternative.chord) }
+        }
+
+        /**
+         * Splits the selected region where the playhead is.
+         *
+         * The playhead is the natural split point: the user has just heard the chord change there.
+         * A split outside the region is ignored rather than clamped, because clamping would put the
+         * boundary somewhere they did not choose.
+         */
+        override fun onSplitAtPlayhead(rowIndex: Int) {
+            val row = rows.value.getOrNull(rowIndex) ?: return
+            val position = playbackController.state.value.positionMs
+            if (position <= row.startMs || position >= row.endMs) return
+            viewModelScope.launch { chartRepository.splitChordRegion(projectId, row.eventId, position) }
+        }
+
+        override fun onMergeWithNext(rowIndex: Int) {
+            val row = rows.value.getOrNull(rowIndex) ?: return
+            viewModelScope.launch { chartRepository.mergeWithNext(projectId, row.eventId) }
         }
 
         override fun onAnalyze(profile: AnalysisProfile) = analysisLauncher.start(projectId, profile)

@@ -165,17 +165,50 @@ private fun ReadyContent(
         }
     }
 
+    PerformanceDialogs(
+        state = state,
+        actions = actions,
+        editingRowIndex = editingRowIndex,
+        showManualChartDialog = showManualChartDialog,
+        onDismissEdit = { editingRowIndex = null },
+        onDismissManualChart = { showManualChartDialog = false },
+    )
+}
+
+/** The sheets and dialogs the table can raise, kept out of the layout that raises them. */
+@Composable
+private fun PerformanceDialogs(
+    state: PerformanceUiState.Ready,
+    actions: PerformanceActions,
+    editingRowIndex: Int?,
+    showManualChartDialog: Boolean,
+    onDismissEdit: () -> Unit,
+    onDismissManualChart: () -> Unit,
+) {
     editingRowIndex?.let { index ->
         state.rows.getOrNull(index)?.let { row ->
             ChordEditSheet(
                 row = row,
                 transposeSemitones = state.display.transposeSemitones,
-                onDismiss = { editingRowIndex = null },
+                alternatives = state.alternativesFor(row),
+                onDismiss = onDismissEdit,
                 onSubmit = { symbol ->
                     actions.onChordEdited(index, symbol)
-                    editingRowIndex = null
+                    onDismissEdit()
+                },
+                onSelectAlternative = { alternative ->
+                    actions.onSelectAlternative(index, alternative)
+                    onDismissEdit()
                 },
                 onConfirm = { actions.onChordConfirmed(index, true) },
+                onSplit = {
+                    actions.onSplitAtPlayhead(index)
+                    onDismissEdit()
+                },
+                onMerge = {
+                    actions.onMergeWithNext(index)
+                    onDismissEdit()
+                },
                 onRestoreMachineResult = actions::onRestoreMachineResult,
             )
         }
@@ -183,10 +216,10 @@ private fun ReadyContent(
 
     if (showManualChartDialog) {
         ManualChartDialog(
-            onDismiss = { showManualChartDialog = false },
+            onDismiss = onDismissManualChart,
             onConfirm = { bpm, beatsPerMeasure ->
                 actions.onCreateManualChart(bpm, beatsPerMeasure)
-                showManualChartDialog = false
+                onDismissManualChart()
             },
         )
     }

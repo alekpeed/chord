@@ -17,16 +17,19 @@ import com.alekpeed.hearsay.core.model.analysis.ProcessingBackend
 import com.alekpeed.hearsay.core.model.analysis.ProcessingBackendGateway
 import com.alekpeed.hearsay.core.model.analysis.StageStatus
 import com.alekpeed.hearsay.core.model.analysis.StageType
+import com.alekpeed.hearsay.core.model.music.ChordFormatter
 import com.alekpeed.hearsay.core.model.project.AnalysisProfile
 import com.alekpeed.hearsay.core.model.project.AnalysisStatus
 import com.alekpeed.hearsay.core.model.project.SourceAvailability
 import com.alekpeed.hearsay.core.model.repository.ChartRepository
+import com.alekpeed.hearsay.core.model.repository.ChordAlternative
 import com.alekpeed.hearsay.core.model.repository.ProjectRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -146,6 +149,10 @@ class LocalAnalysisBackend @Inject constructor(
                 revisionSourceIsUser = false,
             )
 
+            // What else the analysis heard. Storing it is the difference between a chart that
+            // asserts and a chart the user can argue with.
+            persistAlternates(projectId, result)
+
             projectDao.upsertProject(
                 project.project.copy(
                     analysisStatus = AnalysisStatus.COMPLETE,
@@ -165,6 +172,31 @@ class LocalAnalysisBackend @Inject constructor(
         } catch (error: Exception) {
             fail(AnalysisFailure.Unknown(error.message ?: "Analysis failed"))
         }
+    }
+
+    /**
+     * Attaches each region's runners-up to the row that was actually written.
+     *
+     * Regions are matched by start time because merging spans changed their identity on the way in;
+     * an alternate whose region did not survive the merge is simply dropped.
+     */
+    private suspend fun persistAlternates(projectId: String, result: com.alekpeed.hearsay.core.audio.AnalysisResult) {
+        val chart = chartRepository.observeChart(projectId).first()
+        val byStart = chart.chordEvents.associateBy { it.startMs }
+
+        val alternates = result.chords.flatMap { recognized ->
+            val event = byStart[recognized.startMs] ?: return@flatMap emptyList()
+            recognized.alternates.mapIndexed { index, alternate ->
+                ChordAlternative(
+                    chordEventId = event.id,
+                    rank = index + 1,
+                    chord = alternate.chord,
+                    displaySymbol = ChordFormatter.format(alternate.chord),
+                    confidence = alternate.score.coerceIn(0f, 1f),
+                )
+            }
+        }
+        if (alternates.isNotEmpty()) chartRepository.replaceAlternatives(projectId, alternates)
     }
 
     private fun fail(failure: AnalysisFailure): Result<Unit> = Result.failure(AnalysisException(failure))

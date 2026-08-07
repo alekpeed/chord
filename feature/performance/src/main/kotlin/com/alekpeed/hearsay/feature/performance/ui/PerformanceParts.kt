@@ -39,6 +39,7 @@ import com.alekpeed.hearsay.core.model.analysis.AnalysisJob
 import com.alekpeed.hearsay.core.model.music.ChordFormatter
 import com.alekpeed.hearsay.core.model.music.ChordParser
 import com.alekpeed.hearsay.core.model.project.AnalysisProfile
+import com.alekpeed.hearsay.core.model.repository.ChordAlternative
 import com.alekpeed.hearsay.core.model.timeline.AnalysisSource
 import com.alekpeed.hearsay.core.model.timeline.ChartRow
 import com.alekpeed.hearsay.core.model.timeline.ChordNotation
@@ -166,12 +167,17 @@ private fun ChordNotation.label(): String = when (this) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+@Suppress("LongParameterList")
 internal fun ChordEditSheet(
     row: ChartRow,
     transposeSemitones: Int,
+    alternatives: List<ChordAlternative>,
     onDismiss: () -> Unit,
     onSubmit: (String) -> Unit,
+    onSelectAlternative: (ChordAlternative) -> Unit,
     onConfirm: () -> Unit,
+    onSplit: () -> Unit,
+    onMerge: () -> Unit,
     onRestoreMachineResult: () -> Unit,
 ) {
     var text by remember(row.eventId) { mutableStateOf(row.displaySymbol) }
@@ -224,6 +230,28 @@ internal fun ChordEditSheet(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            if (alternatives.isNotEmpty()) {
+                // What else the app heard. Offering the runners-up is the whole point of storing
+                // confidence: the second guess is often the right one on a dense chord.
+                Text("It also heard", style = MaterialTheme.typography.titleSmall)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    alternatives.take(3).forEach { alternative ->
+                        OutlinedButton(
+                            onClick = { onSelectAlternative(alternative) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("${alternative.displaySymbol}   ·   ${(alternative.confidence * 100).toInt()}%")
+                        }
+                    }
+                }
+            }
+
+            Text("This region", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onSplit) { Text("Split at playhead") }
+                OutlinedButton(onClick = onMerge) { Text("Merge with next") }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

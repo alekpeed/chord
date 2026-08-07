@@ -9,6 +9,7 @@ import com.alekpeed.hearsay.core.data.mapper.toEntity
 import com.alekpeed.hearsay.core.database.dao.ChartDao
 import com.alekpeed.hearsay.core.database.dao.ProjectDao
 import com.alekpeed.hearsay.core.database.dao.RevisionDao
+import com.alekpeed.hearsay.core.database.entity.ChordAlternativeEntity
 import com.alekpeed.hearsay.core.database.entity.RevisionEntity
 import com.alekpeed.hearsay.core.model.music.Chord
 import com.alekpeed.hearsay.core.model.music.ChordFormatter
@@ -17,6 +18,7 @@ import com.alekpeed.hearsay.core.model.music.NoteSpelling
 import com.alekpeed.hearsay.core.model.project.Revision
 import com.alekpeed.hearsay.core.model.project.RevisionSource
 import com.alekpeed.hearsay.core.model.repository.ChartRepository
+import com.alekpeed.hearsay.core.model.repository.ChordAlternative
 import com.alekpeed.hearsay.core.model.timeline.SongChart
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -72,6 +74,128 @@ class RoomChartRepository @Inject constructor(
                 }
             }
             .flowOn(ioDispatcher)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeAlternatives(projectId: String): Flow<Map<String, List<ChordAlternative>>> =
+        projectDao.observeProject(projectId)
+            .map { it?.project?.activeRevisionId }
+            .flatMapLatest { revisionId ->
+                if (revisionId == null) {
+                    flowOf(emptyMap())
+                } else {
+                    chartDao.observeAlternatives(revisionId).map { rows ->
+                        rows.groupBy { it.chordEventId }.mapValues { (_, group) ->
+                            group.mapNotNull { row ->
+                                val chord = ChartJson.decode(row.chordJson) ?: return@mapNotNull null
+                                ChordAlternative(row.chordEventId, row.rank, chord, row.displaySymbol, row.confidence)
+                            }
+                        }
+                    }
+                }
+            }
+            .flowOn(ioDispatcher)
+
+    override suspend fun replaceAlternatives(projectId: String, alternatives: List<ChordAlternative>) {
+        withContext(ioDispatcher) {
+            chartDao.upsertAlternatives(
+                alternatives.map { alternative ->
+                    ChordAlternativeEntity(
+                        id = "${alternative.chordEventId}:alt" + alternative.rank,
+                        chordEventId = alternative.chordEventId,
+                        rank = alternative.rank,
+                        chordJson = ChartJson.encode(alternative.chord).orEmpty(),
+                        displaySymbol = alternative.displaySymbol,
+                        confidence = alternative.confidence,
+                    )
+                },
+            )
+        }
+    }
+
+    /**
+     * Splits a region at [atMs].
+     *
+     * Both halves keep the chord that was there — the split is a statement about *where* the
+     * harmony changes, not yet about what it changes to, and the user names the second half next.
+     */
+    override suspend fun splitChordRegion(projectId: String, eventId: String, atMs: Long): String =
+        withContext(ioDispatcher) {
+            val revisionId = revisionForEditing(projectId)
+            val localId = eventId.substringAfterLast(':')
+            val target = chartDao.chords(revisionId).firstOrNull { it.localId == localId }
+                ?: error("Chord event $eventId is not present in revision $revisionId")
+
+            require(atMs > target.startMs && atMs < target.endMs) {
+                "Split point $atMs is outside ${target.startMs}..${target.endMs}"
+            }
+
+            val secondLocalId = "${localId}s" + atMs
+            chartDao.upsertChords(
+                listOf(
+                    target.copy(endMs = atMs, source = RevisionSource.USER.name),
+                    target.copy(
+                        id = ChartDao.chordEventId(revisionId, secondLocalId),
+                        localId = secondLocalId,
+                        startMs = atMs,
+                        source = RevisionSource.USER.name,
+                        userConfirmed = false,
+                    ),
+                ),
+            )
+            revisionId
+        }
+
+    override suspend fun mergeWithNext(projectId: String, eventId: String): String =
+        withContext(ioDispatcher) {
+            val revisionId = revisionForEditing(projectId)
+            val localId = eventId.substringAfterLast(':')
+            val chords = chartDao.chords(revisionId)
+            val index = chords.indexOfFirst { it.localId == localId }
+            require(index >= 0) { "Chord event $eventId is not present in revision $revisionId" }
+            val next = chords.getOrNull(index + 1) ?: return@withContext revisionId
+
+            chartDao.upsertChords(
+                listOf(chords[index].copy(endMs = next.endMs, source = RevisionSource.USER.name)),
+            )
+            chartDao.deleteChord(next.id)
+            revisionId
+        }
+
+    /**
+     * Moves the boundary between a region and the one before it.
+     *
+     * Both regions are rewritten together: a boundary belongs to two chords, and moving one edge
+     * without the other would leave a gap or an overlap in the timeline.
+     */
+    override suspend fun moveBoundary(projectId: String, eventId: String, newStartMs: Long): String =
+        withContext(ioDispatcher) {
+            val revisionId = revisionForEditing(projectId)
+            val localId = eventId.substringAfterLast(':')
+            val chords = chartDao.chords(revisionId)
+            val index = chords.indexOfFirst { it.localId == localId }
+            require(index >= 0) { "Chord event $eventId is not present in revision $revisionId" }
+
+            val target = chords[index]
+            val previous = chords.getOrNull(index - 1)
+            val lowerBound = (previous?.startMs ?: 0L) + MinimumRegionMs
+            val upperBound = target.endMs - MinimumRegionMs
+            val clamped = newStartMs.coerceIn(lowerBound, upperBound)
+
+            val updates = mutableListOf(target.copy(startMs = clamped, source = RevisionSource.USER.name))
+            previous?.let { updates += it.copy(endMs = clamped, source = RevisionSource.USER.name) }
+            chartDao.upsertChords(updates)
+            revisionId
+        }
+
+    override suspend fun renameSection(projectId: String, sectionId: String, label: String): String =
+        withContext(ioDispatcher) {
+            val revisionId = revisionForEditing(projectId)
+            val localId = sectionId.substringAfterLast(':')
+            val section = chartDao.sections(revisionId).firstOrNull { it.localId == localId }
+                ?: error("Section $sectionId is not present in revision $revisionId")
+            chartDao.insertSections(listOf(section.copy(label = label, source = RevisionSource.USER.name)))
+            revisionId
+        }
 
     override suspend fun revisions(projectId: String): List<Revision> = withContext(ioDispatcher) {
         revisionDao.revisionsFor(projectId).map { it.toDomain() }
@@ -195,4 +319,9 @@ class RoomChartRepository @Inject constructor(
     }
 
     private fun localId(index: Int): String = "e%05d".format(index)
+
+    private companion object {
+        /** A region shorter than this cannot be read on a chart, so boundaries stop here. */
+        const val MinimumRegionMs = 100L
+    }
 }

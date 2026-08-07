@@ -4,6 +4,7 @@ import com.alekpeed.hearsay.core.model.analysis.AnalysisJob
 import com.alekpeed.hearsay.core.model.playback.PlaybackState
 import com.alekpeed.hearsay.core.model.project.AnalysisProfile
 import com.alekpeed.hearsay.core.model.project.ProjectWithSource
+import com.alekpeed.hearsay.core.model.repository.ChordAlternative
 import com.alekpeed.hearsay.core.model.timeline.ChartDisplayOptions
 import com.alekpeed.hearsay.core.model.timeline.ChartRow
 
@@ -25,6 +26,7 @@ sealed interface PerformanceUiState {
         val chordsHidden: Boolean,
         val sourceProblem: SourceProblem?,
         val analysis: AnalysisJob?,
+        val alternatives: Map<String, List<ChordAlternative>>,
     ) : PerformanceUiState {
 
         val isAnalysing: Boolean get() = analysis?.isActive == true
@@ -34,6 +36,8 @@ sealed interface PerformanceUiState {
         val currentRow: ChartRow? get() = rows.getOrNull(currentRowIndex)
 
         val selectedRow: ChartRow? get() = selectedRowIndex?.let { rows.getOrNull(it) }
+
+        fun alternativesFor(row: ChartRow): List<ChordAlternative> = alternatives[row.eventId].orEmpty()
 
         val tempoLabel: String? get() = project.project.tempoBpm?.let { "${it.toInt()} BPM" }
 
@@ -63,6 +67,9 @@ interface PerformanceActions {
     fun onChordConfirmed(rowIndex: Int, confirmed: Boolean)
     fun onRestoreMachineResult()
     fun onCreateManualChart(bpm: Float, beatsPerMeasure: Int)
+    fun onSelectAlternative(rowIndex: Int, alternative: ChordAlternative)
+    fun onSplitAtPlayhead(rowIndex: Int)
+    fun onMergeWithNext(rowIndex: Int)
     fun onAnalyze(profile: AnalysisProfile)
     fun onCancelAnalysis()
 }

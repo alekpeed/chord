@@ -26,7 +26,9 @@ object DatabaseModule {
         Room.databaseBuilder(context, HearsayDatabase::class.java, HearsayDatabase.Name)
             // No destructive fallback. A user's corrections are not disposable, so a missing
             // migration must fail loudly in development rather than silently wipe a library.
-            .addMigrations(HearsayDatabase.Migration1To2, HearsayDatabase.Migration2To3)
+            .addMigrations(HearsayDatabase.Migration1To2,
+                HearsayDatabase.Migration2To3,
+                HearsayDatabase.Migration3To4,)
             .setJournalMode(androidx.room.RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
             .build()
 
