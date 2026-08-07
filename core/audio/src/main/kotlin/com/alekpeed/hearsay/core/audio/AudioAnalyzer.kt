@@ -14,6 +14,8 @@ import com.alekpeed.hearsay.core.audio.harmony.chordChangeStrength
 import com.alekpeed.hearsay.core.audio.rhythm.BeatTracker
 import com.alekpeed.hearsay.core.audio.rhythm.DownbeatEstimator
 import com.alekpeed.hearsay.core.audio.rhythm.OnsetEnvelope
+import com.alekpeed.hearsay.core.audio.rhythm.TempoCurve
+import com.alekpeed.hearsay.core.audio.rhythm.TempoEstimate
 import com.alekpeed.hearsay.core.audio.rhythm.TempoEstimator
 import com.alekpeed.hearsay.core.audio.structure.BassTracker
 import com.alekpeed.hearsay.core.audio.structure.SectionDetector
@@ -210,6 +212,8 @@ class AudioAnalyzer(
             downbeatPhase = downbeatPhase,
             sections = sections,
             tempo = tempo.bpm,
+            tempoSpans = rhythm.curve.segments(),
+            hopSeconds = rhythm.curve.hopSeconds,
             durationMs = mono.durationMs,
             key = key,
         )
@@ -230,9 +234,10 @@ class AudioAnalyzer(
 
     private class RhythmAnalysis(
         val envelope: OnsetEnvelope,
-        val tempo: com.alekpeed.hearsay.core.audio.rhythm.TempoEstimate,
+        val tempo: TempoEstimate,
         val beatFrames: List<Int>,
         val beatTimesMs: List<Long>,
+        val curve: TempoCurve,
     )
 
     private class SeparatedFeatures(val envelope: OnsetEnvelope, val chroma: Chromagram)
@@ -271,9 +276,20 @@ class AudioAnalyzer(
     }
 
     private fun analyzeRhythm(envelope: OnsetEnvelope): RhythmAnalysis {
-        val tempo = TempoEstimator.estimate(envelope)
-        val beatFrames = BeatTracker.track(envelope, tempo.bpm)
-        return RhythmAnalysis(envelope, tempo, beatFrames, beatFrames.map { envelope.timeMsOfFrame(it) })
+        // The curve, not one number. A recording that drifts or opens in free time cannot be
+        // followed by a constant period, and the grid sliding out of phase is what makes the
+        // playing position move at the wrong speed against the music.
+        val curve = TempoEstimator.curve(envelope)
+        val global = TempoEstimator.estimate(envelope)
+        val beatFrames = BeatTracker.track(envelope, curve)
+        val tempo = TempoEstimate(curve.medianBpm.takeIf { it > 0f } ?: global.bpm, global.confidence)
+        return RhythmAnalysis(
+            envelope = envelope,
+            tempo = tempo,
+            beatFrames = beatFrames,
+            beatTimesMs = beatFrames.map { envelope.timeMsOfFrame(it) },
+            curve = curve,
+        )
     }
 
     /** Chroma comes from the harmonic part, where sustained pitch lives. */
@@ -306,7 +322,7 @@ class AudioAnalyzer(
                 sampleRate = buffer.sampleRate,
                 fftSize = settings.fftSize,
                 hopSeconds = settings.hopSize.toDouble() / buffer.sampleRate,
-                expectedFrames = Spectrogram.frameCountFor(buffer, settings.fftSize, settings.hopSize),
+                expectedFrames = Spectrogram.frameCountFor(buffer, settings.hopSize),
             )
             Spectrogram.forEachFrame(buffer, settings.fftSize, settings.hopSize) { _, magnitudes ->
                 builder.add(magnitudes)
@@ -371,6 +387,8 @@ class AudioAnalyzer(
         downbeatPhase: Int,
         sections: List<com.alekpeed.hearsay.core.audio.structure.DetectedSection>,
         tempo: Float,
+        tempoSpans: List<com.alekpeed.hearsay.core.audio.rhythm.TempoSpan>,
+        hopSeconds: Double,
         durationMs: Long,
         key: Key,
     ): SongChart {
@@ -439,7 +457,19 @@ class AudioAnalyzer(
             chordEvents = settled,
             beats = beats,
             sections = sectionEvents,
-            tempoSegments = listOf(TempoSegment(0, maxOf(1, durationMs), tempo, 0.6f)),
+            // The tempo the analysis actually found, span by span. One segment across the whole
+            // recording was a claim the analysis was never in a position to make.
+            tempoSegments = tempoSpans
+                .map { span ->
+                    TempoSegment(
+                        startMs = (span.startFrame * hopSeconds * 1000).toLong(),
+                        endMs = (span.endFrame * hopSeconds * 1000).toLong().coerceAtLeast(1),
+                        bpm = span.bpm,
+                        confidence = 0.6f,
+                    )
+                }
+                .filter { it.endMs > it.startMs }
+                .ifEmpty { listOf(TempoSegment(0, maxOf(1, durationMs), tempo, 0.6f)) },
             key = key,
         )
     }

@@ -8,6 +8,75 @@ import kotlin.math.roundToInt
 data class TempoEstimate(val bpm: Float, val confidence: Float)
 
 /**
+ * Tempo through a recording, rather than one number for the whole of it.
+ *
+ * A single tempo lays the whole beat grid against one period, so a recording that drifts, opens in
+ * free time, or changes feel slides progressively out of phase — the beat marker keeps moving at a
+ * steady rate while the music does not. That is not a tuning problem: no constant can follow a
+ * curve, however well it is chosen.
+ *
+ * Periods are held in envelope frames rather than BPM because that is what the beat tracker's inner
+ * loop needs, and converting once here is cheaper than converting in the loop.
+ */
+class TempoCurve internal constructor(
+    private val periods: FloatArray,
+    val hopSeconds: Double,
+) {
+    val size: Int get() = periods.size
+
+    fun periodAt(frame: Int): Float = periods[frame.coerceIn(0, periods.size - 1)]
+
+    fun bpmAt(frame: Int): Float = periodToBpm(periodAt(frame), hopSeconds)
+
+    /** The tempo of the recording as one number, for the places that still want one. */
+    val medianBpm: Float
+        get() {
+            if (periods.isEmpty()) return 0f
+            val sorted = periods.sortedArray()
+            return periodToBpm(sorted[sorted.size / 2], hopSeconds)
+        }
+
+    /**
+     * The curve as spans of near-constant tempo.
+     *
+     * Adjacent frames almost always agree, so this collapses to a handful of spans for a steady
+     * recording and to more for one that genuinely moves. A span per frame would be true and
+     * useless.
+     */
+    fun segments(tolerance: Float = 0.04f): List<TempoSpan> {
+        if (periods.isEmpty()) return emptyList()
+        val spans = mutableListOf<TempoSpan>()
+        var startFrame = 0
+        var runBpm = bpmAt(0)
+
+        for (frame in 1 until periods.size) {
+            val bpm = bpmAt(frame)
+            if (!tempoAgrees(bpm, runBpm, tolerance)) {
+                spans += TempoSpan(startFrame, frame, runBpm)
+                startFrame = frame
+                runBpm = bpm
+            }
+        }
+        spans += TempoSpan(startFrame, periods.size, runBpm)
+        return spans
+    }
+
+    companion object {
+        internal fun periodToBpm(period: Float, hopSeconds: Double): Float =
+            if (period > 0f) (60.0 / (period * hopSeconds)).toFloat() else 0f
+
+        /** A curve that never changes, for callers that genuinely have one tempo. */
+        fun constant(bpm: Float, hopSeconds: Double, frames: Int): TempoCurve {
+            val period = if (bpm > 0f) (60.0 / bpm / hopSeconds).toFloat() else 0f
+            return TempoCurve(FloatArray(maxOf(1, frames)) { period }, hopSeconds)
+        }
+    }
+}
+
+/** One stretch of near-constant tempo, in envelope frames. */
+data class TempoSpan(val startFrame: Int, val endFrame: Int, val bpm: Float)
+
+/**
  * Tempo by autocorrelation of the onset envelope, biased toward how people actually count.
  *
  * Autocorrelation alone is ambiguous by factors of two — a track at 140 correlates just as well at
@@ -49,6 +118,144 @@ object TempoEstimator {
         val confidence = if (mean > 1e-6f) ((bestScore / mean - 1f) / 4f).coerceIn(0f, 1f) else 0f
         return TempoEstimate(bpm.toFloat(), confidence)
     }
+
+    /**
+     * Tempo measured in overlapping windows and then decoded as a path.
+     *
+     * Each window is autocorrelated on its own, which gives a local reading but also a local
+     * mistake: a sparse window will happily report half or double the real tempo. Viterbi over the
+     * windows fixes that, because the cost of moving between tempi is the log of their ratio, and
+     * an octave jump is an enormous step. So the path follows genuine drift closely and refuses to
+     * halve or double unless the evidence overwhelms the penalty.
+     *
+     * The preference for a human counting speed is applied to the whole path once, through the
+     * emission scores, rather than being re-litigated by every window independently.
+     */
+    fun curve(envelope: OnsetEnvelope): TempoCurve {
+        val minLag = (60.0 / MaxBpm / envelope.hopSeconds).roundToInt().coerceAtLeast(1)
+        val maxLag = (60.0 / MinBpm / envelope.hopSeconds).roundToInt().coerceAtMost(envelope.size - 1)
+        if (envelope.size < 4 || maxLag <= minLag) {
+            return TempoCurve.constant(estimate(envelope).bpm, envelope.hopSeconds, maxOf(1, envelope.size))
+        }
+
+        val windowFrames = (WindowSeconds / envelope.hopSeconds).roundToInt().coerceAtLeast(maxLag * 2)
+        val hopFrames = (WindowHopSeconds / envelope.hopSeconds).roundToInt().coerceAtLeast(1)
+        val lags = (minLag..maxLag).toList()
+
+        val windowStarts = mutableListOf<Int>()
+        var start = 0
+        while (start < envelope.size) {
+            windowStarts += start
+            start += hopFrames
+        }
+        if (windowStarts.size < 2) {
+            return TempoCurve.constant(estimate(envelope).bpm, envelope.hopSeconds, envelope.size)
+        }
+
+        val salience = windowStarts.map { windowStart ->
+            salienceIn(envelope, windowStart, windowStart + windowFrames, lags)
+        }
+        val path = decodeTempoPath(salience, lags)
+
+        // One period per envelope frame, interpolated between window centers so the tempo moves
+        // smoothly rather than stepping at window boundaries.
+        val periods = FloatArray(envelope.size)
+        val centers = windowStarts.map { (it + windowFrames / 2).coerceIn(0, envelope.size - 1) }
+        for (frame in 0 until envelope.size) {
+            periods[frame] = interpolatePeriod(frame, centers, path, lags)
+        }
+        return TempoCurve(periods, envelope.hopSeconds)
+    }
+
+    /** Autocorrelation over one window, biased toward how people actually count. */
+    private fun salienceIn(
+        envelope: OnsetEnvelope,
+        from: Int,
+        until: Int,
+        lags: List<Int>,
+    ): FloatArray {
+        val end = until.coerceAtMost(envelope.size)
+        val out = FloatArray(lags.size)
+        for ((index, lag) in lags.withIndex()) {
+            var correlation = 0f
+            var i = from + lag
+            while (i < end) {
+                correlation += envelope.values[i] * envelope.values[i - lag]
+                i++
+            }
+            val bpm = 60.0 / (lag * envelope.hopSeconds)
+            val bias = ln(bpm / PreferredBpm) / BiasWidth
+            out[index] = correlation * kotlin.math.exp(-0.5 * bias * bias).toFloat()
+        }
+        // Normalized per window, so a loud passage does not simply outvote a quiet one.
+        val peak = out.maxOrNull() ?: 0f
+        if (peak > 1e-9f) for (i in out.indices) out[i] /= peak
+        return out
+    }
+
+    /** Viterbi over tempo states; moving costs the squared log of the ratio. */
+    private fun decodeTempoPath(salience: List<FloatArray>, lags: List<Int>): IntArray {
+        val steps = salience.size
+        val states = lags.size
+        val delta = Array(steps) { FloatArray(states) }
+        val psi = Array(steps) { IntArray(states) }
+
+        for (state in 0 until states) delta[0][state] = salience[0][state]
+
+        for (step in 1 until steps) {
+            for (state in 0 until states) {
+                var bestScore = Float.NEGATIVE_INFINITY
+                var bestPrevious = 0
+                for (previous in 0 until states) {
+                    val ratio = ln(lags[state].toDouble() / lags[previous]).toFloat()
+                    val value = delta[step - 1][previous] - TempoChangeWeight * ratio * ratio
+                    if (value > bestScore) {
+                        bestScore = value
+                        bestPrevious = previous
+                    }
+                }
+                delta[step][state] = bestScore + salience[step][state]
+                psi[step][state] = bestPrevious
+            }
+        }
+
+        val path = IntArray(steps)
+        var best = 0
+        for (state in 1 until states) if (delta[steps - 1][state] > delta[steps - 1][best]) best = state
+        path[steps - 1] = best
+        for (step in steps - 2 downTo 0) {
+            best = psi[step + 1][best]
+            path[step] = best
+        }
+        return path
+    }
+
+    private fun interpolatePeriod(frame: Int, centers: List<Int>, path: IntArray, lags: List<Int>): Float {
+        if (frame <= centers.first()) return lags[path.first()].toFloat()
+        if (frame >= centers.last()) return lags[path.last()].toFloat()
+
+        var upper = 1
+        while (upper < centers.size && centers[upper] < frame) upper++
+        val lower = upper - 1
+        val span = (centers[upper] - centers[lower]).toFloat()
+        val position = if (span > 0f) (frame - centers[lower]) / span else 0f
+        val a = lags[path[lower]].toFloat()
+        val b = lags[path[upper]].toFloat()
+        return a + (b - a) * position
+    }
+
+    /** Long enough to hold several bars, short enough to notice the tempo moving. */
+    private const val WindowSeconds = 6.0
+    private const val WindowHopSeconds = 1.5
+
+    /**
+     * How reluctant the tempo is to change.
+     *
+     * High enough that a sparse window cannot drag the path to half or double time, low enough that
+     * a genuine ritardando is followed. An octave is a log ratio of 0.69, so the penalty for one is
+     * roughly forty times that for a one-percent drift.
+     */
+    private const val TempoChangeWeight = 90f
 }
 
 /**
@@ -63,20 +270,31 @@ object BeatTracker {
     private const val TightnessWeight = 100f
     private const val Alpha = 0.7f
 
-    fun track(envelope: OnsetEnvelope, bpm: Float): List<Int> {
-        if (envelope.size < 2 || bpm <= 0f) return emptyList()
+    fun track(envelope: OnsetEnvelope, bpm: Float): List<Int> =
+        track(envelope, TempoCurve.constant(bpm, envelope.hopSeconds, envelope.size))
 
-        val period = (60.0 / bpm / envelope.hopSeconds).toFloat()
-        if (period < 1f) return emptyList()
+    /**
+     * Lays a beat grid that follows [curve] rather than one fixed period.
+     *
+     * The only change from the fixed-tempo version is that the expected spacing is read at the
+     * frame being scored instead of once at the top. That is the whole difference between a grid
+     * that drifts away from a recording and one that stays with it: the deviation penalty is now
+     * measured against what the music is doing there, not against an average of the whole song.
+     */
+    fun track(envelope: OnsetEnvelope, curve: TempoCurve): List<Int> {
+        if (envelope.size < 2) return emptyList()
+        if (curve.periodAt(0) < 1f) return emptyList()
 
         val size = envelope.size
         val score = FloatArray(size)
         val backlink = IntArray(size) { -1 }
 
-        val searchStart = (-2 * period).roundToInt()
-        val searchEnd = (-period / 2).roundToInt()
-
         for (i in 0 until size) {
+            val period = curve.periodAt(i)
+            if (period < 1f) continue
+            val searchStart = (-2 * period).roundToInt()
+            val searchEnd = (-period / 2).roundToInt()
+
             var bestScore = 0f
             var bestIndex = -1
             for (offset in searchStart..searchEnd) {
@@ -115,7 +333,7 @@ object BeatTracker {
             cursor = backlink[cursor]
         }
         beats.reverse()
-        return regularize(beats, envelope)
+        return regularize(beats, envelope, curve)
     }
 
     /**
@@ -126,17 +344,17 @@ object BeatTracker {
      * are corrected against the median interval, which is far more robust than the nominal tempo
      * because it reflects what the tracker actually found.
      */
-    private fun regularize(beats: List<Int>, envelope: OnsetEnvelope): List<Int> {
+    private fun regularize(beats: List<Int>, envelope: OnsetEnvelope, curve: TempoCurve): List<Int> {
         if (beats.size < 3) return beats
-
-        val intervals = beats.zipWithNext { a, b -> b - a }.sorted()
-        val median = intervals[intervals.size / 2]
-        if (median <= 0) return beats
 
         val kept = mutableListOf(beats.first())
         for (index in 1 until beats.size) {
             val candidate = beats[index]
             val gap = candidate - kept.last()
+            // The expected spacing is read where the gap is, not averaged over the recording. A
+            // global median would repair a gap in a slow passage using a fast passage's spacing,
+            // which is how a filled gap reintroduces exactly the drift this is meant to remove.
+            val median = curve.periodAt(kept.last()).roundToInt().coerceAtLeast(1)
 
             if (gap < TooCloseFraction * median) {
                 // Keep whichever of the two has more onset energy behind it.

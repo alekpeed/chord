@@ -34,7 +34,7 @@ class Spectrogram(
             fftSize: Int = DefaultFftSize,
             hopSize: Int = DefaultHopSize,
         ): Spectrogram {
-            val frames = ArrayList<FloatArray>(frameCountFor(buffer, fftSize, hopSize))
+            val frames = ArrayList<FloatArray>(frameCountFor(buffer, hopSize))
             forEachFrame(buffer, fftSize, hopSize) { _, magnitudes -> frames += magnitudes }
             return Spectrogram(frames.toTypedArray(), buffer.sampleRate, fftSize, hopSize)
         }
@@ -54,15 +54,30 @@ class Spectrogram(
         ) {
             val fft = Fft(fftSize)
             val window = hannWindow(fftSize)
-            for (frameIndex in 0 until frameCountFor(buffer, fftSize, hopSize)) {
-                val frame = buffer.frameAt(frameIndex * hopSize, fftSize)
+            val half = fftSize / 2
+            for (frameIndex in 0 until frameCountFor(buffer, hopSize)) {
+                // Centered on the time the frame stands for, not beginning there.
+                //
+                // A window that begins at its own timestamp reports everything early: a drum hit is
+                // first seen when it enters the far end of the window, which for a 4096-sample
+                // window is 186 ms before it happens. Every beat came out roughly 140 ms ahead of
+                // the music, on every recording, at every tempo — which a listener hears as the
+                // chart running ahead of what they are playing along to.
+                val frame = buffer.frameAt(frameIndex * hopSize - half, fftSize)
                 for (i in frame.indices) frame[i] *= window[i]
                 onFrame(frameIndex, fft.magnitudeSpectrum(frame))
             }
         }
 
-        fun frameCountFor(buffer: AudioBuffer, fftSize: Int, hopSize: Int): Int =
-            maxOf(1, (buffer.samples.size - fftSize) / hopSize + 1)
+        /**
+         * How many frames a buffer yields.
+         *
+         * Independent of the transform size now that windows are centered: a frame exists for every
+         * hop across the whole recording, with the ends zero-padded, rather than only where a full
+         * window fits inside the audio.
+         */
+        fun frameCountFor(buffer: AudioBuffer, hopSize: Int): Int =
+            maxOf(1, buffer.samples.size / hopSize + 1)
 
         fun binCountFor(fftSize: Int): Int = fftSize / 2 + 1
     }

@@ -74,6 +74,35 @@ object SignalGenerator {
         return out
     }
 
+    /**
+     * A click track whose tempo moves steadily from [startBpm] to [endBpm].
+     *
+     * The point of the fixture is that no single tempo describes it. A tracker anchored to one
+     * period can match the beginning or the end but not both, and the error accumulates — which is
+     * exactly what a listener hears as the marker moving at the wrong speed.
+     */
+    fun acceleratingClickTrack(
+        startBpm: Float,
+        endBpm: Float,
+        beats: Int,
+        beatsPerBar: Int = 4,
+    ): Pair<FloatArray, List<Double>> {
+        val times = mutableListOf<Double>()
+        var t = 0.0
+        for (beat in 0 until beats) {
+            times += t
+            val position = beat.toDouble() / maxOf(1, beats - 1)
+            val bpm = startBpm + (endBpm - startBpm) * position
+            t += 60.0 / bpm
+        }
+        val total = ((t + 1.0) * SampleRate).toInt()
+        val out = FloatArray(total)
+        for ((index, time) in times.withIndex()) {
+            addClick(out, (time * SampleRate).toInt(), if (index % beatsPerBar == 0) 1f else 0.6f)
+        }
+        return out to times
+    }
+
     /** Spreads a chord across a plausible register: root low, remaining tones stacked above. */
     private fun voiceChord(chord: Chord, rootOctave: Int): List<Int> {
         val rootMidi = 12 * (rootOctave + 1) + chord.root.pitchClass

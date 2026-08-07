@@ -18,11 +18,19 @@ class AudioBuffer(
 ) {
     val durationMs: Long get() = (samples.size * 1000L) / sampleRate
 
+    /**
+     * A window of [length] samples starting at [startSample], zero-padded at either edge.
+     *
+     * A negative start is padded on the left rather than returning silence. Windows are centered on
+     * the time they represent, so the first few genuinely begin before the recording does, and
+     * treating those as empty would blind the analysis to the opening bar.
+     */
     fun frameAt(startSample: Int, length: Int): FloatArray {
         val out = FloatArray(length)
-        val available = min(length, max(0, samples.size - startSample))
-        if (available > 0 && startSample >= 0) {
-            samples.copyInto(out, 0, startSample, startSample + available)
+        val from = max(0, startSample)
+        val to = min(samples.size, startSample + length)
+        if (to > from) {
+            samples.copyInto(out, from - startSample, from, to)
         }
         return out
     }
