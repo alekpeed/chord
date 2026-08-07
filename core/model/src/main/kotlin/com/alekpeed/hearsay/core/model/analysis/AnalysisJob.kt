@@ -19,7 +19,7 @@ enum class StageType(val displayName: String, val weight: Float) {
     SEPARATION("Separating harmony from percussion", 0.20f),
     RHYTHM("Finding beats and bars", 0.15f),
     TONAL("Finding the key and sections", 0.10f),
-    CHORDS("Recognising chords", 0.25f),
+    CHORDS("Recognizing chords", 0.25f),
     BASS("Following the bass", 0.10f),
     FINALIZE("Saving the analysis", 0.05f),
     ;
@@ -108,8 +108,14 @@ interface AnalysisRepository {
     suspend fun finishJob(jobId: String, status: JobStatus, failure: AnalysisFailure? = null)
     suspend fun deleteJob(jobId: String)
 
-    /** Marks jobs that a killed process left mid-flight, so the queue screen is never a lie. */
-    suspend fun recoverOrphanedJobs()
+    /**
+     * Marks jobs that a killed process left mid-flight, so the queue screen is never a lie.
+     *
+     * [exceptProjectIds] are the projects this process is genuinely working on. They have to be
+     * excluded, or recovery run while an analysis is in flight would mark a live job failed
+     * underneath the coroutine still producing it.
+     */
+    suspend fun recoverOrphanedJobs(exceptProjectIds: Set<String> = emptySet())
 }
 
 /**

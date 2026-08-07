@@ -26,7 +26,7 @@ import javax.inject.Singleton
  * Owns running analyses.
  *
  * One place decides what is running, so the service, the queue screen and the project screen all
- * agree. Cancellation is real: the job is cancelled, the database says cancelled, and the stages
+ * agree. Cancellation is real: the job is canceled, the database says canceled, and the stages
  * that had completed stay completed rather than being rolled back.
  */
 @Singleton
@@ -46,6 +46,21 @@ class AnalysisEngine @Inject constructor(
 
     val isBusy: Boolean get() = running.isNotEmpty()
 
+    /**
+     * Starts an analysis without tying its creation to the caller's lifetime.
+     *
+     * [start] suspends while the job row is written, and the service used to call it from its own
+     * scope. The service stopped itself the moment it saw an empty queue — which is what the
+     * database reports during exactly that window — and canceling its scope killed `start` between
+     * writing the row and launching the work. The row existed, so the screen said "Listening to
+     * this recording"; no stage ever ran, so it said "Starting"; and it said that forever.
+     *
+     * Launching on the application scope means nothing shorter-lived can interrupt that handover.
+     */
+    fun enqueue(projectId: String, profile: AnalysisProfile) {
+        scope.launch { start(projectId, profile) }
+    }
+
     /** Starts an analysis, or returns the job already running for this project. */
     suspend fun start(projectId: String, profile: AnalysisProfile): AnalysisJob {
         analysisRepository.latestJob(projectId)?.takeIf { it.isActive && running.containsKey(projectId) }
@@ -63,14 +78,38 @@ class AnalysisEngine @Inject constructor(
     }
 
     fun cancel(projectId: String) {
-        running.remove(projectId)?.cancel()
+        val work = running.remove(projectId)
         _activeProjectIds.value = running.keys.toSet()
+        work?.cancel()
+
+        // A job with no coroutine behind it is one this process is not running: a row left by a
+        // killed process, or one orphaned by a bug. Stop has to resolve those too — otherwise the
+        // button the user is looking at, on the screen that is stuck, does nothing at all.
+        if (work == null) scope.launch { settleIfStranded(projectId) }
     }
 
     fun cancelAll() {
+        val stranded = running.keys.toSet()
         running.values.forEach { it.cancel() }
         running.clear()
         _activeProjectIds.value = emptySet()
+        scope.launch { analysisRepository.recoverOrphanedJobs(exceptProjectIds = stranded) }
+    }
+
+    /**
+     * Clears jobs left active by a process that is gone.
+     *
+     * Called at startup, where nothing is running yet, so any active row is a leftover by
+     * definition. Jobs this process owns are excluded regardless, because this is also reachable
+     * from the queue screen while work is genuinely in flight.
+     */
+    fun recoverOrphanedJobs() {
+        scope.launch { analysisRepository.recoverOrphanedJobs(exceptProjectIds = running.keys.toSet()) }
+    }
+
+    private suspend fun settleIfStranded(projectId: String) {
+        val job = analysisRepository.latestJob(projectId) ?: return
+        if (job.isActive) analysisRepository.finishJob(job.id, JobStatus.CANCELLED, AnalysisFailure.Cancelled)
     }
 
     private suspend fun run(job: AnalysisJob, profile: AnalysisProfile) {

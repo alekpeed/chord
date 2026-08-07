@@ -40,6 +40,15 @@ class AnalysisService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /**
+     * Whether a start has been asked for whose job has not yet appeared in the database.
+     *
+     * There is a window — from the start command until the job row is committed — where the queue
+     * is legitimately empty although work is coming. Reading that emptiness as "finished" and
+     * stopping is what used to strand an analysis at "Starting" with nothing behind it.
+     */
+    private var awaitingWork = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -52,7 +61,9 @@ class AnalysisService : Service() {
         scope.launch {
             engine.observeActiveJobs().collectLatest { jobs ->
                 val active = jobs.firstOrNull { it.isActive }
-                if (active == null && !engine.isBusy) {
+                if (active != null) awaitingWork = false
+
+                if (active == null && !engine.isBusy && !awaitingWork) {
                     stopSelf()
                 } else {
                     notificationManager().notify(NotificationId, buildNotification(active))
@@ -69,7 +80,10 @@ class AnalysisService : Service() {
                     ?.let { runCatching { AnalysisProfile.valueOf(it) }.getOrNull() }
                     ?: AnalysisProfile.BALANCED
                 if (projectId != null) {
-                    scope.launch { engine.start(projectId, profile) }
+                    awaitingWork = true
+                    // Deliberately not this scope: the handover must outlive the service, which can
+                    // stop for reasons that have nothing to do with whether the analysis should run.
+                    engine.enqueue(projectId, profile)
                 }
             }
 
@@ -102,7 +116,7 @@ class AnalysisService : Service() {
         )
 
         return NotificationCompat.Builder(this, ChannelId)
-            .setContentTitle("Analysing")
+            .setContentTitle("Analyzing")
             .setContentText(stageName)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
@@ -132,7 +146,7 @@ class AnalysisService : Service() {
             "Analysis",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Progress while a recording is being analysed"
+            description = "Progress while a recording is being analyzed"
             setShowBadge(false)
         }
         notificationManager().createNotificationChannel(channel)

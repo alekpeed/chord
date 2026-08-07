@@ -28,8 +28,11 @@ class ProcessingViewModel @Inject constructor(
 ) : ViewModel() {
 
     init {
-        // A job the system killed is not running. Clearing that on entry keeps the queue truthful.
-        viewModelScope.launch { analysisRepository.recoverOrphanedJobs() }
+        // A job the system killed is not running. Clearing that on entry keeps the queue truthful —
+        // excluding whatever this process is genuinely working on, which is not orphaned at all.
+        viewModelScope.launch {
+            analysisRepository.recoverOrphanedJobs(exceptProjectIds = engine.activeProjectIds.value)
+        }
     }
 
     val uiState: StateFlow<ProcessingUiState> = combine(

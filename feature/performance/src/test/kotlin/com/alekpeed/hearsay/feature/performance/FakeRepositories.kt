@@ -186,19 +186,19 @@ class FakeAnalysisRepository(job: AnalysisJob? = null) : AnalysisRepository {
         job.value = null
     }
 
-    override suspend fun recoverOrphanedJobs() = Unit
+    override suspend fun recoverOrphanedJobs(exceptProjectIds: Set<String>) = Unit
 }
 
 /** Records what would have been launched, without a service in the way. */
 class FakeAnalysisLauncher : AnalysisLauncher {
     val started = mutableListOf<Pair<String, AnalysisProfile>>()
-    val cancelled = mutableListOf<String>()
+    val canceled = mutableListOf<String>()
 
     override fun start(projectId: String, profile: AnalysisProfile) {
         started += projectId to profile
     }
 
     override fun cancel(projectId: String) {
-        cancelled += projectId
+        canceled += projectId
     }
 }

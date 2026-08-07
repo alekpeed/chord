@@ -140,12 +140,16 @@ class RoomAnalysisRepository @Inject constructor(
     }
 
     /**
-     * A job left RUNNING by a killed process is not running. Marking it failed on next launch keeps
+     * A job left active by a killed process is not running. Marking it failed on next launch keeps
      * the queue honest and gives the user a retry rather than a spinner that never resolves.
+     *
+     * Jobs this process is actually running are skipped — otherwise recovery, which can run while
+     * work is in flight, would mark a live job failed while its coroutine carries on writing to it.
      */
-    override suspend fun recoverOrphanedJobs() {
+    override suspend fun recoverOrphanedJobs(exceptProjectIds: Set<String>) {
         withContext(ioDispatcher) {
             for (job in analysisDao.orphanedJobs()) {
+                if (job.projectId in exceptProjectIds) continue
                 analysisDao.finishJob(
                     jobId = job.id,
                     status = JobStatus.FAILED.name,
@@ -167,7 +171,7 @@ class RoomAnalysisRepository @Inject constructor(
         AnalysisFailure.OutOfMemory ->
             "The device ran out of memory. Try the Fast profile, or a shorter excerpt."
 
-        AnalysisFailure.Cancelled -> "You cancelled this analysis."
+        AnalysisFailure.Cancelled -> "You canceled this analysis."
         is AnalysisFailure.Unknown -> failure.message
     }
 }

@@ -28,8 +28,16 @@ interface AnalysisDao {
     @Query("SELECT * FROM analysis_jobs WHERE projectId = :projectId ORDER BY createdAtMs DESC LIMIT 1")
     suspend fun latestJob(projectId: String): JobWithStages?
 
-    /** Jobs left RUNNING by a process that died; the app recovers these on next launch. */
-    @Query("SELECT * FROM analysis_jobs WHERE status = 'RUNNING'")
+    /**
+     * Jobs a dead process left mid-flight; the app recovers these on next launch.
+     *
+     * QUEUED counts as well as RUNNING. A job is QUEUED for the whole window between its row being
+     * written and the first stage starting, so a process that dies in that window — or a bug that
+     * cancels the coroutine there — leaves a QUEUED row that nothing will ever advance. Matching
+     * only RUNNING left exactly those jobs stuck forever, with the project screen reporting
+     * "Starting" and no way out but clearing app data.
+     */
+    @Query("SELECT * FROM analysis_jobs WHERE status IN ('RUNNING', 'QUEUED')")
     suspend fun orphanedJobs(): List<AnalysisJobEntity>
 
     @Upsert
