@@ -59,6 +59,7 @@ class PcmDecoder @Inject constructor(
     suspend fun decode(
         uri: Uri,
         maxDurationMs: Long = DefaultMaxDurationMs,
+        targetSampleRate: Int = DefaultTargetSampleRate,
         onProgress: (Float) -> Unit = {},
     ): Result<DecodedAudio> = withContext(decodeDispatcher) {
         val extractor = MediaExtractor()
@@ -82,22 +83,30 @@ class PcmDecoder @Inject constructor(
             codec.start()
 
             val totalDurationUs = runCatching { format.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
-            val output = FloatArrayBuilder()
-            var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            val maxSamples = if (maxDurationMs > 0) {
-                (maxDurationMs / 1000.0 * sampleRate * channels).toLong()
+
+            // The cap is on what is kept, not on what is read: mono at the analysis rate.
+            val maxOutputSamples = if (maxDurationMs > 0) {
+                (maxDurationMs / 1000.0 * targetSampleRate).toLong()
             } else {
                 Long.MAX_VALUE
             }
+            val expectedOutputSamples = if (totalDurationUs > 0) {
+                (totalDurationUs / 1_000_000.0 * targetSampleRate).toInt()
+            } else {
+                0
+            }.coerceAtMost(maxOutputSamples.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
 
-            drain(codec, extractor, output, maxSamples, totalDurationUs, onProgress) { newChannels, newRate ->
-                channels = newChannels
-                sampleRate = newRate
-            }
+            val sink = DecodeSink(targetSampleRate, maxOutputSamples)
+            sink.configure(
+                format.getInteger(MediaFormat.KEY_CHANNEL_COUNT),
+                format.getInteger(MediaFormat.KEY_SAMPLE_RATE),
+                expectedOutputSamples,
+            )
+
+            drain(codec, extractor, sink, totalDurationUs, onProgress, expectedOutputSamples)
 
             onProgress(1f)
-            Result.success(DecodedAudio(output.toFloatArray(), channels, sampleRate))
+            Result.success(sink.toDecodedAudio())
         } catch (error: Exception) {
             Result.failure(DecodeException(DecodeFailure.Unreadable(error.message ?: "Decoding failed")))
         } finally {
@@ -117,11 +126,10 @@ class PcmDecoder @Inject constructor(
     private suspend fun drain(
         codec: MediaCodec,
         extractor: MediaExtractor,
-        output: FloatArrayBuilder,
-        maxSamples: Long,
+        sink: DecodeSink,
         totalDurationUs: Long,
         onProgress: (Float) -> Unit,
-        onFormatChanged: (channels: Int, sampleRate: Int) -> Unit,
+        expectedOutputSamples: Int,
     ) {
         val bufferInfo = MediaCodec.BufferInfo()
         var sawInputEnd = false
@@ -148,9 +156,10 @@ class PcmDecoder @Inject constructor(
             when (val outputIndex = codec.dequeueOutputBuffer(bufferInfo, TimeoutUs)) {
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val newFormat = codec.outputFormat
-                    onFormatChanged(
+                    sink.configure(
                         newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT),
                         newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE),
+                        expectedOutputSamples,
                     )
                 }
 
@@ -158,31 +167,28 @@ class PcmDecoder @Inject constructor(
 
                 else -> if (outputIndex >= 0) {
                     val buffer = codec.getOutputBuffer(outputIndex)
-                    if (buffer != null && bufferInfo.size > 0) appendPcm(buffer, bufferInfo, output)
+                    if (buffer != null && bufferInfo.size > 0) sink.append(buffer, bufferInfo)
                     codec.releaseOutputBuffer(outputIndex, false)
 
                     if (totalDurationUs > 0) {
                         onProgress((bufferInfo.presentationTimeUs.toFloat() / totalDurationUs).coerceIn(0f, 1f))
                     }
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEnd = true
-                    if (output.size >= maxSamples) sawOutputEnd = true
+                    if (sink.isFull) sawOutputEnd = true
                 }
             }
         }
     }
 
-    /** 16-bit PCM is what the platform decoders emit; anything else is converted by the codec. */
-    private fun appendPcm(buffer: ByteBuffer, info: MediaCodec.BufferInfo, output: FloatArrayBuilder) {
-        buffer.position(info.offset)
-        buffer.limit(info.offset + info.size)
-        val shorts = buffer.order(ByteOrder.nativeOrder()).asShortBuffer()
-        while (shorts.hasRemaining()) {
-            output.add(shorts.get() / 32_768f)
-        }
-    }
+    companion object {
+        private const val TimeoutUs = 10_000L
 
-    private companion object {
-        const val TimeoutUs = 10_000L
+        /**
+         * Analysis runs on mono at this rate. Harmony lives well below 11 kHz, so nothing useful is
+         * discarded, and decoding straight to it means the full-rate stereo signal — by far the
+         * largest thing in the pipeline — is never held in memory at all.
+         */
+        const val DefaultTargetSampleRate = 22_050
 
         /**
          * Analysis is capped at fifteen minutes of audio. Beyond that the memory cost climbs past
@@ -195,7 +201,7 @@ class PcmDecoder @Inject constructor(
 class DecodeException(val failure: DecodeFailure) : Exception(failure.toString())
 
 /** Growable float buffer; avoids the boxing an ArrayList<Float> would cost over millions of samples. */
-private class FloatArrayBuilder(initialCapacity: Int = 1 shl 20) {
+internal class FloatArrayBuilder(initialCapacity: Int = 1 shl 20) {
     private var array = FloatArray(initialCapacity)
     var size = 0
         private set
@@ -206,4 +212,113 @@ private class FloatArrayBuilder(initialCapacity: Int = 1 shl 20) {
     }
 
     fun toFloatArray(): FloatArray = array.copyOf(size)
+}
+
+/**
+ * Averages channels to mono and resamples, as the decoder produces samples.
+ *
+ * Doing it here rather than after the fact is the whole point. A seven-minute stereo track at
+ * 44.1 kHz is 150 MB of float samples; the same audio as mono at the analysis rate is under 40 MB,
+ * and the intermediate full-rate copies — the interleaved one, the downmixed one, the resampled one
+ * — never exist at all. Holding them is what made a real tablet run out of memory.
+ *
+ * Resampling is linear interpolation with a one-sample carry across buffer boundaries, which is
+ * what makes it streamable. That is the same quality as resampling afterwards: the target rate is
+ * below the source and the spectral analysis downstream low-passes anyway.
+ */
+internal class MonoResampler(
+    private val channels: Int,
+    sourceRate: Int,
+    targetRate: Int,
+    private val output: FloatArrayBuilder,
+) {
+    private val ratio = if (targetRate > 0) sourceRate.toDouble() / targetRate else 1.0
+
+    /** Where the next output sample sits, in source-sample coordinates. */
+    private var nextOutputPosition = 0.0
+    private var sourceIndex = 0L
+    private var previous = 0f
+    private var started = false
+
+    /** One frame's worth of interleaved channel values, already converted to float. */
+    fun accept(frame: FloatArray, count: Int) {
+        if (count <= 0) return
+        var sum = 0f
+        for (channel in 0 until count) sum += frame[channel]
+        push(sum / count)
+    }
+
+    private fun push(sample: Float) {
+        if (!started) {
+            started = true
+            previous = sample
+            // Position zero is the first sample itself; emit it and move on.
+            if (nextOutputPosition <= 0.0) {
+                output.add(sample)
+                nextOutputPosition += ratio
+            }
+            sourceIndex = 1
+            return
+        }
+        while (nextOutputPosition <= sourceIndex) {
+            val base = kotlin.math.floor(nextOutputPosition)
+            val fraction = (nextOutputPosition - base).toFloat()
+            val interpolated = if (base >= sourceIndex) sample else previous + (sample - previous) * fraction
+            output.add(interpolated)
+            nextOutputPosition += ratio
+        }
+        previous = sample
+        sourceIndex++
+    }
+}
+
+/**
+ * Collects decoded PCM as mono at the analysis sample rate.
+ *
+ * The codec may only announce its real channel count and rate once output starts, so the resampler
+ * is built on the first configuration seen rather than up front.
+ */
+internal class DecodeSink(private val targetSampleRate: Int, private val maxOutputSamples: Long) {
+    private var output = FloatArrayBuilder()
+    private var resampler: MonoResampler? = null
+    private var channels = 1
+    private var frame = FloatArray(1)
+    private var carry = FloatArray(0)
+    private var carried = 0
+
+    val size: Int get() = output.size
+    val isFull: Boolean get() = output.size >= maxOutputSamples
+
+    fun configure(channels: Int, sourceRate: Int, expectedOutputSamples: Int) {
+        if (resampler != null) return
+        this.channels = channels.coerceAtLeast(1)
+        frame = FloatArray(this.channels)
+        carry = FloatArray(this.channels)
+        carried = 0
+        // Sized from the track's duration so the buffer never doubles, which would briefly hold
+        // both the old and the new array.
+        output = FloatArrayBuilder(expectedOutputSamples.coerceAtLeast(1 shl 16))
+        resampler = MonoResampler(this.channels, sourceRate, targetSampleRate, output)
+    }
+
+    fun append(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+        val resampler = resampler ?: return
+        buffer.position(info.offset)
+        buffer.limit(info.offset + info.size)
+        val shorts = buffer.order(ByteOrder.nativeOrder()).asShortBuffer()
+
+        // A codec buffer can in principle end mid-frame. Carrying the remainder keeps the channel
+        // alignment; dropping it would silently rotate left and right for the rest of the file.
+        while (shorts.hasRemaining()) {
+            carry[carried++] = shorts.get() / 32_768f
+            if (carried == channels) {
+                carry.copyInto(frame)
+                resampler.accept(frame, channels)
+                carried = 0
+            }
+        }
+    }
+
+    fun toDecodedAudio(): DecodedAudio =
+        DecodedAudio(output.toFloatArray(), channels = 1, sampleRate = targetSampleRate)
 }

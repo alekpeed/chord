@@ -4,6 +4,7 @@ import android.net.Uri
 import com.alekpeed.hearsay.core.audio.AnalysisSettings
 import com.alekpeed.hearsay.core.audio.AnalysisStageId
 import com.alekpeed.hearsay.core.audio.AudioAnalyzer
+import com.alekpeed.hearsay.core.audio.dsp.AudioBuffer
 import com.alekpeed.hearsay.core.common.dispatchers.Dispatcher
 import com.alekpeed.hearsay.core.common.dispatchers.HearsayDispatcher
 import com.alekpeed.hearsay.core.common.time.TimeProvider
@@ -80,7 +81,13 @@ class LocalAnalysisBackend @Inject constructor(
                 val reporter = launch {
                     decodeProgress.collect { onStage(StageType.MEDIA_PREPARATION, StageStatus.RUNNING, it, null) }
                 }
-                decoder.decode(Uri.parse(source.uri)) { decodeProgress.value = it }
+                // Decoded straight to what the analysis wants. Asking for the file's own rate and
+                // channel count and converting afterwards costs several times the memory, all of it
+                // at once, which is what exhausted the heap on a real device.
+                decoder.decode(
+                    uri = Uri.parse(source.uri),
+                    targetSampleRate = AudioBuffer.AnalysisSampleRate,
+                ) { decodeProgress.value = it }
                     .also { reporter.cancel() }
             }.getOrElse { error ->
                 onStage(StageType.MEDIA_PREPARATION, StageStatus.FAILED, 0f, error.message)

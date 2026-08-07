@@ -37,6 +37,77 @@ class Chromagram(
         return normalize(out)
     }
 
+    /**
+     * Folds spectra into chroma one frame at a time.
+     *
+     * A chroma frame is twelve floats against a spectrum's thousands, so the whole chromagram
+     * costs about as much as a single spectrogram frame per second of audio. Accumulating it
+     * this way is what lets the separation upstream hand over a reused scratch buffer instead
+     * of materializing every frame it produces.
+     */
+    class Builder(
+        private val binCount: Int,
+        private val sampleRate: Int,
+        private val fftSize: Int,
+        private val hopSeconds: Double,
+        expectedFrames: Int = 0,
+    ) {
+        constructor(spectrogram: Spectrogram, expectedFrames: Int = 0) : this(
+            binCount = spectrogram.binCount,
+            sampleRate = spectrogram.sampleRate,
+            fftSize = spectrogram.fftSize,
+            hopSeconds = spectrogram.hopSeconds,
+            expectedFrames = expectedFrames,
+        )
+
+        private val binToPitchClass = IntArray(binCount) { -1 }
+        private val binWeight = FloatArray(binCount)
+        private val frames = ArrayList<FloatArray>(maxOf(0, expectedFrames))
+
+        init {
+            for (bin in 1 until binCount) {
+                val frequency = bin.toDouble() * sampleRate / fftSize
+                if (frequency < LowestFrequency || frequency > HighestFrequency) continue
+                val midi = 69.0 + 12.0 * log2(frequency / ReferenceFrequency)
+                binToPitchClass[bin] = Math.floorMod(midi.roundToInt(), PitchClasses)
+                // Taper toward the edges of the useful band so a bass fundamental and a cymbal
+                // wash do not both count as harmony.
+                binWeight[bin] = bandWeight(frequency)
+            }
+        }
+
+        /** The spectrum is read, never retained; the caller may reuse the array. */
+        fun add(spectrum: FloatArray) {
+            val chroma = FloatArray(PitchClasses)
+            for (bin in 1 until binCount) {
+                val pitchClass = binToPitchClass[bin]
+                if (pitchClass < 0) continue
+                val energy = spectrum[bin] * binWeight[bin]
+                if (energy <= 0f) continue
+                chroma[pitchClass] += energy
+                // Subtract the overtones this note would produce.
+                //
+                // This is what stops a chord being read as an extension of itself. A sounding
+                // E has a third partial a twelfth above — a B — and a sounding G has a fifth
+                // partial that is also a B. Left alone, a plain C major triad grows a major
+                // seventh out of its own overtones and gets named Cmaj7. Octave partials are
+                // skipped: they land on the pitch class they came from and cancel nothing.
+                var weight = HarmonicDecay
+                for (harmonic in 2..HarmonicCount) {
+                    val semitones = (12.0 * log2(harmonic.toDouble())).roundToInt()
+                    weight *= HarmonicDecay
+                    if (semitones % PitchClasses == 0) continue
+                    val harmonicPc = Math.floorMod(pitchClass + semitones, PitchClasses)
+                    chroma[harmonicPc] -= energy * weight * HarmonicSuppression
+                }
+            }
+            for (pc in 0 until PitchClasses) chroma[pc] = maxOf(0f, chroma[pc])
+            frames += normalize(compress(chroma))
+        }
+
+        fun build(): Chromagram = Chromagram(frames.toTypedArray(), hopSeconds)
+    }
+
     companion object {
         const val PitchClasses = 12
 
@@ -52,49 +123,9 @@ class Chromagram(
             spectrogram: Spectrogram,
             magnitudes: Array<FloatArray> = spectrogram.frames,
         ): Chromagram {
-            val binToPitchClass = IntArray(spectrogram.binCount) { -1 }
-            val binWeight = FloatArray(spectrogram.binCount)
-
-            for (bin in 1 until spectrogram.binCount) {
-                val frequency = spectrogram.frequencyOfBin(bin)
-                if (frequency < LowestFrequency || frequency > HighestFrequency) continue
-                val midi = 69.0 + 12.0 * log2(frequency / ReferenceFrequency)
-                binToPitchClass[bin] = Math.floorMod(midi.roundToInt(), PitchClasses)
-                // Taper toward the edges of the useful band so a bass fundamental and a cymbal
-                // wash do not both count as harmony.
-                binWeight[bin] = bandWeight(frequency)
-            }
-
-            val frames = Array(magnitudes.size) { frameIndex ->
-                val spectrum = magnitudes[frameIndex]
-                val chroma = FloatArray(PitchClasses)
-                for (bin in 1 until spectrogram.binCount) {
-                    val pitchClass = binToPitchClass[bin]
-                    if (pitchClass < 0) continue
-                    val energy = spectrum[bin] * binWeight[bin]
-                    if (energy <= 0f) continue
-                    chroma[pitchClass] += energy
-                    // Subtract the overtones this note would produce.
-                    //
-                    // This is what stops a chord being read as an extension of itself. A sounding
-                    // E has a third partial a twelfth above — a B — and a sounding G has a fifth
-                    // partial that is also a B. Left alone, a plain C major triad grows a major
-                    // seventh out of its own overtones and gets named Cmaj7. Octave partials are
-                    // skipped: they land on the pitch class they came from and cancel nothing.
-                    var weight = HarmonicDecay
-                    for (harmonic in 2..HarmonicCount) {
-                        val semitones = (12.0 * log2(harmonic.toDouble())).roundToInt()
-                        weight *= HarmonicDecay
-                        if (semitones % PitchClasses == 0) continue
-                        val harmonicPc = Math.floorMod(pitchClass + semitones, PitchClasses)
-                        chroma[harmonicPc] -= energy * weight * HarmonicSuppression
-                    }
-                }
-                for (pc in 0 until PitchClasses) chroma[pc] = maxOf(0f, chroma[pc])
-                normalize(compress(chroma))
-            }
-
-            return Chromagram(frames, spectrogram.hopSeconds)
+            val builder = Builder(spectrogram, magnitudes.size)
+            for (frame in magnitudes) builder.add(frame)
+            return builder.build()
         }
 
         private const val HarmonicSuppression = 1.15f

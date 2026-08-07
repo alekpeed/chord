@@ -115,15 +115,16 @@ class AudioAnalyzer(
         onProgress(AnalysisProgress(AnalysisStageId.SPECTRUM, 1f))
 
         onProgress(AnalysisProgress(AnalysisStageId.SEPARATING, 0f))
-        val split = if (settings.separateHarmonicPercussive) {
-            HarmonicPercussive.separate(spectrogram)
-        } else {
-            HarmonicPercussive.Split(spectrogram.frames, spectrogram.frames)
+        // Separation feeds its two outputs straight into the only things that read them — flux for
+        // the beat, chroma for the harmony — so neither half is ever held whole. Materializing them
+        // costs four more copies of the spectrogram, which is what exhausted memory on a tablet.
+        val separated = separateIntoFeatures(spectrogram) { fraction ->
+            onProgress(AnalysisProgress(AnalysisStageId.SEPARATING, fraction))
         }
         onProgress(AnalysisProgress(AnalysisStageId.SEPARATING, 1f))
 
         onProgress(AnalysisProgress(AnalysisStageId.RHYTHM, 0f))
-        val rhythm = analyzeRhythm(spectrogram, split)
+        val rhythm = analyzeRhythm(separated.envelope)
         if (rhythm.beatFrames.size < 4) {
             warnings += "No steady pulse was found, so the bar grid is a guess."
         }
@@ -134,7 +135,7 @@ class AudioAnalyzer(
         onProgress(AnalysisProgress(AnalysisStageId.RHYTHM, 1f))
 
         onProgress(AnalysisProgress(AnalysisStageId.HARMONY, 0f))
-        val harmony = analyzeHarmony(mono, spectrogram, split, beatTimesMs)
+        val harmony = analyzeHarmony(mono, separated.chroma, beatTimesMs)
         val chroma = harmony.chroma
         val keyEstimate = harmony.keyEstimate
         val preferFlats = harmony.preferFlats
@@ -193,17 +194,48 @@ class AudioAnalyzer(
         val beatTimesMs: List<Long>,
     )
 
-    /** Onsets come from the percussive part, where transients actually live. */
-    private fun analyzeRhythm(
+    private class SeparatedFeatures(val envelope: OnsetEnvelope, val chroma: Chromagram)
+
+    /**
+     * Runs the separation, reducing each frame as it appears.
+     *
+     * Onsets come from the percussive part, where transients actually live; chroma comes from the
+     * harmonic part, where sustained pitch lives. Both reductions are tiny — one float and twelve
+     * floats per frame — so consuming the separation in step with producing it turns its cost from
+     * four spectrogram copies into two scratch arrays.
+     */
+    private fun separateIntoFeatures(
         spectrogram: Spectrogram,
-        split: HarmonicPercussive.Split,
-    ): RhythmAnalysis {
-        val envelope = OnsetEnvelope.of(spectrogram, split.percussive)
+        onProgress: (Float) -> Unit,
+    ): SeparatedFeatures {
+        val frameCount = spectrogram.frameCount
+        val onsets = OnsetEnvelope.Builder(spectrogram, frameCount)
+        val chroma = Chromagram.Builder(spectrogram, frameCount)
+
+        if (!settings.separateHarmonicPercussive) {
+            for (frame in spectrogram.frames) {
+                onsets.add(frame)
+                chroma.add(frame)
+            }
+            return SeparatedFeatures(onsets.build(), chroma.build())
+        }
+
+        val progressStep = maxOf(1, frameCount / ProgressReports)
+        HarmonicPercussive.separateInto(spectrogram) { index, harmonic, percussive ->
+            onsets.add(percussive)
+            chroma.add(harmonic)
+            if (index % progressStep == 0) onProgress(index.toFloat() / frameCount)
+        }
+        return SeparatedFeatures(onsets.build(), chroma.build())
+    }
+
+    private fun analyzeRhythm(envelope: OnsetEnvelope): RhythmAnalysis {
         val tempo = TempoEstimator.estimate(envelope)
         val beatFrames = BeatTracker.track(envelope, tempo.bpm)
         return RhythmAnalysis(envelope, tempo, beatFrames, beatFrames.map { envelope.timeMsOfFrame(it) })
     }
 
+    /** Chroma comes from the harmonic part, where sustained pitch lives. */
     private class HarmonyAnalysis(
         val chroma: Chromagram,
         val keyEstimate: KeyEstimator.Estimate,
@@ -212,14 +244,11 @@ class AudioAnalyzer(
         val chords: List<RecognizedChord>,
     )
 
-    /** Chroma comes from the harmonic part, where sustained pitch lives. */
     private fun analyzeHarmony(
         mono: AudioBuffer,
-        spectrogram: Spectrogram,
-        split: HarmonicPercussive.Split,
+        chroma: Chromagram,
         beatTimesMs: List<Long>,
     ): HarmonyAnalysis {
-        val chroma = Chromagram.of(spectrogram, split.harmonic)
         val keyEstimate = KeyEstimator.estimate(chroma)
         val preferFlats = KeyEstimator.prefersFlats(keyEstimate.tonicPitchClass, keyEstimate.isMinor)
 
@@ -228,8 +257,20 @@ class AudioAnalyzer(
         } else {
             null
         }
-        val bassChroma = bassBuffer?.let {
-            Chromagram.of(Spectrogram.of(it, settings.fftSize, settings.hopSize))
+        // Transformed and folded frame by frame. Materializing this second spectrogram cost as much
+        // as the first one and nothing but the chroma was ever read from it.
+        val bassChroma = bassBuffer?.let { buffer ->
+            val builder = Chromagram.Builder(
+                binCount = Spectrogram.binCountFor(settings.fftSize),
+                sampleRate = buffer.sampleRate,
+                fftSize = settings.fftSize,
+                hopSeconds = settings.hopSize.toDouble() / buffer.sampleRate,
+                expectedFrames = Spectrogram.frameCountFor(buffer, settings.fftSize, settings.hopSize),
+            )
+            Spectrogram.forEachFrame(buffer, settings.fftSize, settings.hopSize) { _, magnitudes ->
+                builder.add(magnitudes)
+            }
+            builder.build()
         }
 
         val chords = if (beatTimesMs.size >= 2) {
@@ -408,6 +449,9 @@ class AudioAnalyzer(
 
     private companion object {
         const val MinimumDurationMs = 3_000L
+
+        /** How often the separation reports progress; it is by far the longest stage. */
+        const val ProgressReports = 50
 
         /** A region this short, sharing a root with its neighbour, is decay rather than harmony. */
         const val ArtifactBeatThreshold = 1.3f

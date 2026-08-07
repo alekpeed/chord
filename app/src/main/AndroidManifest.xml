@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+      Analysis holds a spectrogram of the whole recording in memory. A seven-minute track needs
+      more than the default per-app heap allows on many tablets, and the failure is an OutOfMemory
+      part-way through rather than anything the user can act on.
+    -->
     <application
+        android:largeHeap="true"
         android:name=".HearsayApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

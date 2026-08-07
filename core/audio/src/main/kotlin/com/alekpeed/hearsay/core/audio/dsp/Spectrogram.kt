@@ -34,16 +34,37 @@ class Spectrogram(
             fftSize: Int = DefaultFftSize,
             hopSize: Int = DefaultHopSize,
         ): Spectrogram {
+            val frames = ArrayList<FloatArray>(frameCountFor(buffer, fftSize, hopSize))
+            forEachFrame(buffer, fftSize, hopSize) { _, magnitudes -> frames += magnitudes }
+            return Spectrogram(frames.toTypedArray(), buffer.sampleRate, fftSize, hopSize)
+        }
+
+        /**
+         * Transforms one frame at a time without keeping any of them.
+         *
+         * For a consumer that only reduces each frame — chroma, flux — this is the difference
+         * between a few kilobytes and a spectrogram, which on a long recording is hundreds of
+         * megabytes. Each frame handed over is freshly allocated and may be retained.
+         */
+        fun forEachFrame(
+            buffer: AudioBuffer,
+            fftSize: Int = DefaultFftSize,
+            hopSize: Int = DefaultHopSize,
+            onFrame: (index: Int, magnitudes: FloatArray) -> Unit,
+        ) {
             val fft = Fft(fftSize)
             val window = hannWindow(fftSize)
-            val frameCount = maxOf(1, (buffer.samples.size - fftSize) / hopSize + 1)
-            val frames = Array(frameCount) { frameIndex ->
+            for (frameIndex in 0 until frameCountFor(buffer, fftSize, hopSize)) {
                 val frame = buffer.frameAt(frameIndex * hopSize, fftSize)
                 for (i in frame.indices) frame[i] *= window[i]
-                fft.magnitudeSpectrum(frame)
+                onFrame(frameIndex, fft.magnitudeSpectrum(frame))
             }
-            return Spectrogram(frames, buffer.sampleRate, fftSize, hopSize)
         }
+
+        fun frameCountFor(buffer: AudioBuffer, fftSize: Int, hopSize: Int): Int =
+            maxOf(1, (buffer.samples.size - fftSize) / hopSize + 1)
+
+        fun binCountFor(fftSize: Int): Int = fftSize / 2 + 1
     }
 }
 
@@ -59,57 +80,85 @@ object HarmonicPercussive {
 
     data class Split(val harmonic: Array<FloatArray>, val percussive: Array<FloatArray>)
 
-    fun separate(
+    /**
+     * Separates one frame at a time, handing each pair to [onFrame] instead of building the result.
+     *
+     * Both median filters read only from the source spectrogram — the time filter looks a fixed
+     * number of frames either side of the one being produced, and the frequency filter never leaves
+     * its own frame — so nothing has to be accumulated to compute a later frame. That makes the
+     * whole separation a scratch pair of arrays rather than four more copies of the spectrogram.
+     *
+     * The four copies were not a subtlety. On a seven-minute recording each one is around 150 MB,
+     * and allocating them is what made the analysis die of memory exhaustion on a real tablet.
+     *
+     * The frames passed to [onFrame] are reused between calls. A consumer that needs to keep one
+     * must copy it.
+     */
+    fun separateInto(
         spectrogram: Spectrogram,
-        timeFilterLength: Int = 17,
-        frequencyFilterLength: Int = 17,
-    ): Split {
+        timeFilterLength: Int = DefaultFilterLength,
+        frequencyFilterLength: Int = DefaultFilterLength,
+        onFrame: (index: Int, harmonic: FloatArray, percussive: FloatArray) -> Unit,
+    ) {
         val frames = spectrogram.frames
         val frameCount = frames.size
         val bins = spectrogram.binCount
 
-        val harmonicEnhanced = Array(frameCount) { FloatArray(bins) }
-        val percussiveEnhanced = Array(frameCount) { FloatArray(bins) }
-
-        // Horizontal median: smooths along time, so sustained partials survive.
+        val harmonicFrame = FloatArray(bins)
+        val percussiveFrame = FloatArray(bins)
         val timeSlice = FloatArray(timeFilterLength)
-        for (bin in 0 until bins) {
-            for (frame in 0 until frameCount) {
-                var count = 0
-                for (offset in -(timeFilterLength / 2)..(timeFilterLength / 2)) {
-                    val index = frame + offset
-                    if (index in 0 until frameCount) timeSlice[count++] = frames[index][bin]
-                }
-                harmonicEnhanced[frame][bin] = median(timeSlice, count)
-            }
-        }
-
-        // Vertical median: smooths across frequency, so broadband transients survive.
         val freqSlice = FloatArray(frequencyFilterLength)
-        for (frame in 0 until frameCount) {
-            for (bin in 0 until bins) {
-                var count = 0
-                for (offset in -(frequencyFilterLength / 2)..(frequencyFilterLength / 2)) {
-                    val index = bin + offset
-                    if (index in 0 until bins) freqSlice[count++] = frames[frame][index]
-                }
-                percussiveEnhanced[frame][bin] = median(freqSlice, count)
-            }
-        }
+        val timeRadius = timeFilterLength / 2
+        val frequencyRadius = frequencyFilterLength / 2
 
-        val harmonic = Array(frameCount) { FloatArray(bins) }
-        val percussive = Array(frameCount) { FloatArray(bins) }
         for (frame in 0 until frameCount) {
+            val source = frames[frame]
             for (bin in 0 until bins) {
-                val h = harmonicEnhanced[frame][bin]
-                val p = percussiveEnhanced[frame][bin]
+                // Horizontal median: smooths along time, so sustained partials survive.
+                var timeCount = 0
+                for (offset in -timeRadius..timeRadius) {
+                    val index = frame + offset
+                    if (index in 0 until frameCount) timeSlice[timeCount++] = frames[index][bin]
+                }
+                val h = median(timeSlice, timeCount)
+
+                // Vertical median: smooths across frequency, so broadband transients survive.
+                var freqCount = 0
+                for (offset in -frequencyRadius..frequencyRadius) {
+                    val index = bin + offset
+                    if (index in 0 until bins) freqSlice[freqCount++] = source[index]
+                }
+                val p = median(freqSlice, freqCount)
+
                 val total = h + p + 1e-9f
-                harmonic[frame][bin] = frames[frame][bin] * (h / total)
-                percussive[frame][bin] = frames[frame][bin] * (p / total)
+                harmonicFrame[bin] = source[bin] * (h / total)
+                percussiveFrame[bin] = source[bin] * (p / total)
             }
+            onFrame(frame, harmonicFrame, percussiveFrame)
+        }
+    }
+
+    /**
+     * Materializes the whole separation.
+     *
+     * Kept for tests and for callers small enough not to care; the pipeline itself uses
+     * [separateInto], because this allocates two more copies of the spectrogram.
+     */
+    fun separate(
+        spectrogram: Spectrogram,
+        timeFilterLength: Int = DefaultFilterLength,
+        frequencyFilterLength: Int = DefaultFilterLength,
+    ): Split {
+        val harmonic = Array(spectrogram.frames.size) { FloatArray(spectrogram.binCount) }
+        val percussive = Array(spectrogram.frames.size) { FloatArray(spectrogram.binCount) }
+        separateInto(spectrogram, timeFilterLength, frequencyFilterLength) { index, h, p ->
+            h.copyInto(harmonic[index])
+            p.copyInto(percussive[index])
         }
         return Split(harmonic, percussive)
     }
+
+    const val DefaultFilterLength = 17
 
     private fun median(values: FloatArray, count: Int): Float {
         if (count == 0) return 0f

@@ -39,22 +39,47 @@ class OnsetEnvelope(
         return result
     }
 
+    /**
+     * Accumulates spectral flux one frame at a time.
+     *
+     * Flux compares a frame with the one before it, so the only history worth keeping is a
+     * single previous spectrum — one array rather than the whole percussive spectrogram, which
+     * on a long recording is the difference between working and running out of memory.
+     */
+    class Builder(private val hopSeconds: Double, expectedFrames: Int = 0) {
+        constructor(spectrogram: Spectrogram, expectedFrames: Int = 0) :
+            this(spectrogram.hopSeconds, expectedFrames)
+
+        private val values = ArrayList<Float>(maxOf(0, expectedFrames))
+        private var previous: FloatArray? = null
+
+        /** The spectrum is copied, because the caller is free to reuse the array it passed. */
+        fun add(spectrum: FloatArray) {
+            val last = previous
+            if (last == null) {
+                values += 0f
+                previous = spectrum.copyOf()
+                return
+            }
+            var flux = 0f
+            for (bin in spectrum.indices) {
+                // Log magnitudes, so a quiet passage's onsets weigh as much as a loud one's.
+                val diff = ln(1f + spectrum[bin]) - ln(1f + last[bin])
+                if (diff > 0) flux += diff
+            }
+            values += flux
+            spectrum.copyInto(last)
+        }
+
+        fun build(): OnsetEnvelope =
+            OnsetEnvelope(smoothAndNormalize(values.toFloatArray()), hopSeconds)
+    }
+
     companion object {
         fun of(spectrogram: Spectrogram, magnitudes: Array<FloatArray> = spectrogram.frames): OnsetEnvelope {
-            val frameCount = magnitudes.size
-            val values = FloatArray(frameCount)
-            for (frame in 1 until frameCount) {
-                var flux = 0f
-                val current = magnitudes[frame]
-                val previous = magnitudes[frame - 1]
-                for (bin in current.indices) {
-                    // Log magnitudes, so a quiet passage's onsets weigh as much as a loud one's.
-                    val diff = ln(1f + current[bin]) - ln(1f + previous[bin])
-                    if (diff > 0) flux += diff
-                }
-                values[frame] = flux
-            }
-            return OnsetEnvelope(smoothAndNormalize(values), spectrogram.hopSeconds)
+            val builder = Builder(spectrogram, magnitudes.size)
+            for (frame in magnitudes) builder.add(frame)
+            return builder.build()
         }
 
         private fun smoothAndNormalize(values: FloatArray): FloatArray {
