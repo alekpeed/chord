@@ -133,7 +133,8 @@ private fun ChordTableRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = row.measureNumber?.toString() ?: "–",
+                // Bar zero is the pickup: music before the first downbeat, which is normal.
+                text = row.measureNumber?.let { if (it <= 0) "–" else it.toString() } ?: "–",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.width(MeasureColumnWidth),
@@ -189,7 +190,13 @@ private fun ChordTableRow(
  * a practice mode that leaks the answer to TalkBack is not a practice mode.
  */
 private fun ChartRow.describe(chordsHidden: Boolean): String {
-    val bar = measureNumber?.let { "Bar $it" } ?: "Unbarred region"
+    val bar = measureNumber.let { number ->
+        when {
+            number == null -> "Unbarred region"
+            number <= 0 -> "Pickup, before bar one"
+            else -> "Bar $number"
+        }
+    }
     val chordText = if (chordsHidden) "chord hidden" else displaySymbol
     val bass = bassLabel?.let { ", bass $it" }.orEmpty()
     val certainty = if (userConfirmed) ", confirmed by you" else ", ${(confidence * 100).roundToInt()} percent confidence"

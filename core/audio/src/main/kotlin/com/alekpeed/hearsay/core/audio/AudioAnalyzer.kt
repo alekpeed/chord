@@ -374,6 +374,10 @@ class AudioAnalyzer(
         durationMs: Long,
         key: Key,
     ): SongChart {
+        // Beats before the first downbeat are a pickup, numbered bar zero. They used to be dropped
+        // for being "before bar one", which left everything that happens before the first downbeat
+        // with no beat under it at all: no bar number on the chart, and nothing for the playing
+        // position to follow. Music that starts before its first downbeat is normal, not an error.
         val beats = beatTimesMs.mapIndexed { index, timeMs ->
             val position = (index - downbeatPhase).mod(beatsPerMeasure)
             BeatEvent(
@@ -383,7 +387,7 @@ class AudioAnalyzer(
                 confidence = 0.7f,
                 source = AnalysisSource.MACHINE,
             )
-        }.filter { it.measureNumber >= 1 }
+        }
 
         val merged = mutableListOf<ChordEvent>()
         var runStart = 0
