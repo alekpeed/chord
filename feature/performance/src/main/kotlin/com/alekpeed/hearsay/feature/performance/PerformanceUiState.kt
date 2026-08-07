@@ -1,6 +1,8 @@
 package com.alekpeed.hearsay.feature.performance
 
+import com.alekpeed.hearsay.core.model.analysis.AnalysisJob
 import com.alekpeed.hearsay.core.model.playback.PlaybackState
+import com.alekpeed.hearsay.core.model.project.AnalysisProfile
 import com.alekpeed.hearsay.core.model.project.ProjectWithSource
 import com.alekpeed.hearsay.core.model.timeline.ChartDisplayOptions
 import com.alekpeed.hearsay.core.model.timeline.ChartRow
@@ -22,7 +24,10 @@ sealed interface PerformanceUiState {
         val autoScroll: Boolean,
         val chordsHidden: Boolean,
         val sourceProblem: SourceProblem?,
+        val analysis: AnalysisJob?,
     ) : PerformanceUiState {
+
+        val isAnalysing: Boolean get() = analysis?.isActive == true
 
         val hasChart: Boolean get() = rows.isNotEmpty()
 
@@ -58,4 +63,6 @@ interface PerformanceActions {
     fun onChordConfirmed(rowIndex: Int, confirmed: Boolean)
     fun onRestoreMachineResult()
     fun onCreateManualChart(bpm: Float, beatsPerMeasure: Int)
+    fun onAnalyze(profile: AnalysisProfile)
+    fun onCancelAnalysis()
 }

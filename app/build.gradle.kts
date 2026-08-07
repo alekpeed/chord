@@ -53,6 +53,7 @@ dependencies {
     implementation(projects.core.media)
     implementation(projects.feature.library)
     implementation(projects.feature.performance)
+    implementation(projects.feature.processing)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.material3)

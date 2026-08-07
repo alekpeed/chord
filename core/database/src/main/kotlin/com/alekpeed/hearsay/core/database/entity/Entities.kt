@@ -213,3 +213,74 @@ data class ProjectWithAssets(
     @Relation(parentColumn = "id", entityColumn = "projectId")
     val assets: List<MediaAssetEntity>,
 )
+
+/**
+ * One run of the analysis pipeline over one project.
+ *
+ * Jobs are rows rather than in-memory state so that a job survives process death: the app can be
+ * killed mid-analysis and still know, on restart, exactly which stages had finished.
+ */
+@Entity(
+    tableName = "analysis_jobs",
+    foreignKeys = [
+        ForeignKey(
+            entity = ProjectEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["projectId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("projectId"), Index("status")],
+)
+data class AnalysisJobEntity(
+    @PrimaryKey val id: String,
+    val projectId: String,
+    val backend: String,
+    val profile: String,
+    val status: String,
+    val createdAtMs: Long,
+    val startedAtMs: Long?,
+    val completedAtMs: Long?,
+    val progress: Float,
+    val failureCode: String?,
+    val failureMessage: String?,
+)
+
+/**
+ * A checkpoint within a job.
+ *
+ * [inputFingerprint] is what makes reprocessing selective: a stage whose inputs and settings are
+ * unchanged does not run again, and a change upstream invalidates only what depended on it.
+ */
+@Entity(
+    tableName = "analysis_stages",
+    foreignKeys = [
+        ForeignKey(
+            entity = AnalysisJobEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["jobId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("jobId")],
+)
+data class AnalysisStageEntity(
+    @PrimaryKey val id: String,
+    val jobId: String,
+    val stageType: String,
+    val status: String,
+    val orderIndex: Int,
+    val inputFingerprint: String?,
+    val outputVersion: Int,
+    val progress: Float,
+    val modelId: String?,
+    val startedAtMs: Long?,
+    val completedAtMs: Long?,
+    val message: String?,
+)
+
+data class JobWithStages(
+    @Embedded val job: AnalysisJobEntity,
+    @Relation(parentColumn = "id", entityColumn = "jobId")
+    val stages: List<AnalysisStageEntity>,
+)

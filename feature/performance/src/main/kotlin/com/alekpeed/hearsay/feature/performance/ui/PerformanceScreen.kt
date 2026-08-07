@@ -142,6 +142,10 @@ private fun ReadyContent(
 
             if (!state.hasChart) {
                 NoChartState(
+                    analysis = state.analysis,
+                    canAnalyze = state.project.isPlayable,
+                    onAnalyze = actions::onAnalyze,
+                    onCancelAnalysis = actions::onCancelAnalysis,
                     onCreateManualChart = { showManualChartDialog = true },
                     modifier = Modifier.fillMaxSize(),
                 )

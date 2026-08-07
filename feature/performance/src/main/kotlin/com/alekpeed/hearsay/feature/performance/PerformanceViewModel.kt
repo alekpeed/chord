@@ -3,10 +3,13 @@ package com.alekpeed.hearsay.feature.performance
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.alekpeed.hearsay.core.model.analysis.AnalysisLauncher
+import com.alekpeed.hearsay.core.model.analysis.AnalysisRepository
 import com.alekpeed.hearsay.core.model.music.ChordParser
 import com.alekpeed.hearsay.core.model.playback.PlaybackController
 import com.alekpeed.hearsay.core.model.playback.PlaybackError
 import com.alekpeed.hearsay.core.model.playback.PlaybackRequest
+import com.alekpeed.hearsay.core.model.project.AnalysisProfile
 import com.alekpeed.hearsay.core.model.project.ProjectWithSource
 import com.alekpeed.hearsay.core.model.project.SourceAvailability
 import com.alekpeed.hearsay.core.model.repository.ChartRepository
@@ -39,6 +42,8 @@ class PerformanceViewModel @Inject constructor(
     private val projectRepository: ProjectRepository,
     private val chartRepository: ChartRepository,
     private val playbackController: PlaybackController,
+    private val analysisRepository: AnalysisRepository,
+    private val analysisLauncher: AnalysisLauncher,
 ) : ViewModel() {
 
     private val projectId: String = requireNotNull(savedStateHandle[ProjectIdKey]) {
@@ -67,6 +72,9 @@ class PerformanceViewModel @Inject constructor(
         ChartRowBuilder.build(chart, options)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(StopTimeoutMs), emptyList())
 
+    private val analysis = analysisRepository.observeJob(projectId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(StopTimeoutMs), null)
+
     val uiState: StateFlow<PerformanceUiState> = combine(
         combine(project, rows, chart) { project, rows, chart -> Triple(project, rows, chart) },
         playbackController.state,
@@ -74,7 +82,8 @@ class PerformanceViewModel @Inject constructor(
         combine(autoScroll, chordsHidden, selectedRowIndex) { auto, hidden, selected ->
             Triple(auto, hidden, selected)
         },
-    ) { (project, rows, chart), playback, options, (auto, hidden, selected) ->
+        analysis,
+    ) { (project, rows, chart), playback, options, (auto, hidden, selected), job ->
         when {
             project == null -> PerformanceUiState.Loading
             else -> PerformanceUiState.Ready(
@@ -87,6 +96,7 @@ class PerformanceViewModel @Inject constructor(
                 autoScroll = auto,
                 chordsHidden = hidden,
                 sourceProblem = sourceProblemOf(project, playback.error),
+                analysis = job,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(StopTimeoutMs), PerformanceUiState.Loading)
@@ -186,6 +196,10 @@ class PerformanceViewModel @Inject constructor(
         override fun onRestoreMachineResult() {
             viewModelScope.launch { chartRepository.restoreMachineResult(projectId) }
         }
+
+        override fun onAnalyze(profile: AnalysisProfile) = analysisLauncher.start(projectId, profile)
+
+        override fun onCancelAnalysis() = analysisLauncher.cancel(projectId)
 
         override fun onCreateManualChart(bpm: Float, beatsPerMeasure: Int) {
             viewModelScope.launch {

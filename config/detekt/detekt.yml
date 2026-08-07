@@ -16,6 +16,11 @@ complexity:
   CyclomaticComplexMethod:
     active: true
     threshold: 20
+  NestedBlockDepth:
+    # Signal processing walks frames inside bins inside filters. Flattening those loops into
+    # helper calls per sample costs more in allocation and readability than the nesting costs.
+    active: true
+    threshold: 5
 
 style:
   MagicNumber:
@@ -31,6 +36,10 @@ style:
   UnusedPrivateMember:
     active: true
   ForbiddenComment:
+    active: false
+  LoopWithTooManyJumpStatements:
+    # A guard `continue` at the top of a tight numeric loop is clearer than the extra indentation
+    # its inverse would need, and there are several such guards per loop in the DSP code.
     active: false
 
 formatting:

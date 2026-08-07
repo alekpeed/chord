@@ -1,6 +1,14 @@
 package com.alekpeed.hearsay.feature.performance
 
+import com.alekpeed.hearsay.core.model.analysis.AnalysisFailure
+import com.alekpeed.hearsay.core.model.analysis.AnalysisJob
+import com.alekpeed.hearsay.core.model.analysis.AnalysisLauncher
+import com.alekpeed.hearsay.core.model.analysis.AnalysisRepository
+import com.alekpeed.hearsay.core.model.analysis.JobStatus
+import com.alekpeed.hearsay.core.model.analysis.ProcessingBackend
+import com.alekpeed.hearsay.core.model.analysis.StageStatus
 import com.alekpeed.hearsay.core.model.music.Chord
+import com.alekpeed.hearsay.core.model.project.AnalysisProfile
 import com.alekpeed.hearsay.core.model.project.AnalysisStatus
 import com.alekpeed.hearsay.core.model.project.MediaAsset
 import com.alekpeed.hearsay.core.model.project.MediaRole
@@ -101,4 +109,62 @@ class FakeChartRepository(chart: SongChart = SongChart.Empty) : ChartRepository 
     }
 
     override suspend fun setActiveRevision(projectId: String, revisionId: String) = Unit
+}
+
+class FakeAnalysisRepository(job: AnalysisJob? = null) : AnalysisRepository {
+    val job = MutableStateFlow(job)
+
+    override fun observeJob(projectId: String): Flow<AnalysisJob?> = job
+    override fun observeActiveJobs(): Flow<List<AnalysisJob>> =
+        job.map { listOfNotNull(it).filter { candidate -> candidate.isActive } }
+
+    override suspend fun latestJob(projectId: String): AnalysisJob? = job.value
+
+    override suspend fun createJob(projectId: String, profile: AnalysisProfile): AnalysisJob {
+        val created = AnalysisJob(
+            id = "job-1",
+            projectId = projectId,
+            backend = ProcessingBackend.LOCAL,
+            profile = profile,
+            status = JobStatus.QUEUED,
+            createdAtMs = 0,
+            startedAtMs = null,
+            completedAtMs = null,
+            progress = 0f,
+            failureCode = null,
+            failureMessage = null,
+            stages = emptyList(),
+        )
+        job.value = created
+        return created
+    }
+
+    override suspend fun updateStage(stageId: String, status: StageStatus, progress: Float, message: String?) = Unit
+    override suspend fun updateJob(jobId: String, status: JobStatus, progress: Float) {
+        job.value = job.value?.copy(status = status, progress = progress)
+    }
+
+    override suspend fun finishJob(jobId: String, status: JobStatus, failure: AnalysisFailure?) {
+        job.value = job.value?.copy(status = status)
+    }
+
+    override suspend fun deleteJob(jobId: String) {
+        job.value = null
+    }
+
+    override suspend fun recoverOrphanedJobs() = Unit
+}
+
+/** Records what would have been launched, without a service in the way. */
+class FakeAnalysisLauncher : AnalysisLauncher {
+    val started = mutableListOf<Pair<String, AnalysisProfile>>()
+    val cancelled = mutableListOf<String>()
+
+    override fun start(projectId: String, profile: AnalysisProfile) {
+        started += projectId to profile
+    }
+
+    override fun cancel(projectId: String) {
+        cancelled += projectId
+    }
 }

@@ -3,6 +3,7 @@ package com.alekpeed.hearsay.core.database.di
 import android.content.Context
 import androidx.room.Room
 import com.alekpeed.hearsay.core.database.HearsayDatabase
+import com.alekpeed.hearsay.core.database.dao.AnalysisDao
 import com.alekpeed.hearsay.core.database.dao.ChartDao
 import com.alekpeed.hearsay.core.database.dao.PracticeDao
 import com.alekpeed.hearsay.core.database.dao.ProjectDao
@@ -24,6 +25,7 @@ object DatabaseModule {
         Room.databaseBuilder(context, HearsayDatabase::class.java, HearsayDatabase.Name)
             // No destructive fallback. A user's corrections are not disposable, so a missing
             // migration must fail loudly in development rather than silently wipe a library.
+            .addMigrations(HearsayDatabase.Migration1To2)
             .setJournalMode(androidx.room.RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
             .build()
 
@@ -38,4 +40,7 @@ object DatabaseModule {
 
     @Provides
     fun providesPracticeDao(database: HearsayDatabase): PracticeDao = database.practiceDao()
+
+    @Provides
+    fun providesAnalysisDao(database: HearsayDatabase): AnalysisDao = database.analysisDao()
 }

@@ -34,6 +34,8 @@ class PerformanceViewModelTest {
     private val playback = FakePlaybackController()
     private lateinit var projects: FakeProjectRepository
     private lateinit var charts: FakeChartRepository
+    private lateinit var analyses: FakeAnalysisRepository
+    private val launcher = FakeAnalysisLauncher()
 
     private fun chart(): SongChart {
         val symbols = listOf("Cmaj7", "Am7", "Dm7", "G7")
@@ -63,13 +65,14 @@ class PerformanceViewModelTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         projects = FakeProjectRepository()
         charts = FakeChartRepository(chart())
+        analyses = FakeAnalysisRepository()
     }
 
     @After
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel(savedState: SavedStateHandle = SavedStateHandle(mapOf("projectId" to "p1"))) =
-        PerformanceViewModel(savedState, projects, charts, playback) to savedState
+        PerformanceViewModel(savedState, projects, charts, playback, analyses, launcher) to savedState
 
     @Test
     fun `builds a row for every chord region`() = runTest {
@@ -206,6 +209,29 @@ class PerformanceViewModelTest {
 
         assertEquals("content://media/1", playback.preparedRequests.single().uri)
         assertEquals("Autumn Leaves", playback.preparedRequests.single().title)
+    }
+
+    @Test
+    fun `asking for analysis launches it for this project`() = runTest {
+        val (model, _) = viewModel()
+        model.uiState.test { awaitReadyState() }
+
+        model.actions.onAnalyze(com.alekpeed.hearsay.core.model.project.AnalysisProfile.MAXIMUM_QUALITY)
+
+        assertEquals(
+            "p1" to com.alekpeed.hearsay.core.model.project.AnalysisProfile.MAXIMUM_QUALITY,
+            launcher.started.single(),
+        )
+    }
+
+    @Test
+    fun `cancelling analysis reaches the launcher`() = runTest {
+        val (model, _) = viewModel()
+        model.uiState.test { awaitReadyState() }
+
+        model.actions.onCancelAnalysis()
+
+        assertEquals("p1", launcher.cancelled.single())
     }
 
     @Test

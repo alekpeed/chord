@@ -1,6 +1,7 @@
 package com.alekpeed.hearsay.feature.performance.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,8 +18,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,8 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.alekpeed.hearsay.core.model.analysis.AnalysisJob
 import com.alekpeed.hearsay.core.model.music.ChordFormatter
 import com.alekpeed.hearsay.core.model.music.ChordParser
+import com.alekpeed.hearsay.core.model.project.AnalysisProfile
 import com.alekpeed.hearsay.core.model.timeline.AnalysisSource
 import com.alekpeed.hearsay.core.model.timeline.ChartRow
 import com.alekpeed.hearsay.core.model.timeline.ChordNotation
@@ -279,22 +284,126 @@ internal fun ManualChartDialog(
 
 @Composable
 internal fun NoChartState(
+    analysis: AnalysisJob?,
+    canAnalyze: Boolean,
+    onAnalyze: (AnalysisProfile) -> Unit,
+    onCancelAnalysis: () -> Unit,
     onCreateManualChart: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var choosingProfile by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier.padding(32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (analysis?.isActive == true) {
+            Text("Listening to this recording", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                text = analysis.currentStage?.type?.displayName ?: "Starting",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LinearProgressIndicator(
+                progress = { analysis.weightedProgress },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(onClick = onCancelAnalysis) { Text("Stop") }
+            return@Column
+        }
+
         Text("No chart yet", style = MaterialTheme.typography.headlineSmall)
+
+        analysis?.failureMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
         Text(
-            "Automatic analysis is not part of this build. You can play the recording now, and lay " +
-                "out the bars yourself to start writing changes down.",
+            text = "Analysis listens to the recording and works out the beat, the key and the " +
+                "chords. It is signal processing, not a trained model: it reads a clear mix far " +
+                "better than a dense one, and it tells you how sure it is about every chord.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onCreateManualChart) { Text("Lay out bars") }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { choosingProfile = true }, enabled = canAnalyze) {
+                Text(if (analysis == null) "Analyse this recording" else "Try again")
+            }
+            OutlinedButton(onClick = onCreateManualChart) { Text("Lay out bars myself") }
+        }
+
+        if (!canAnalyze) {
+            Text(
+                text = "The audio file has to be available before it can be analysed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    if (choosingProfile) {
+        AnalysisProfileDialog(
+            onDismiss = { choosingProfile = false },
+            onChoose = {
+                onAnalyze(it)
+                choosingProfile = false
+            },
+        )
+    }
+}
+
+/**
+ * The three processing profiles, described by what the user gets rather than by what they cost.
+ */
+@Composable
+internal fun AnalysisProfileDialog(
+    onDismiss: () -> Unit,
+    onChoose: (AnalysisProfile) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("How carefully should it listen?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                ProfileRow(
+                    name = "Balanced",
+                    detail = "Separates harmony from percussion, follows the bass, finds the form. " +
+                        "The right choice for almost everything.",
+                    onClick = { onChoose(AnalysisProfile.BALANCED) },
+                )
+                ProfileRow(
+                    name = "Fast",
+                    detail = "A quick pass at lower resolution. Good for checking the key and tempo " +
+                        "of a long recording before committing to it.",
+                    onClick = { onChoose(AnalysisProfile.FAST) },
+                )
+                ProfileRow(
+                    name = "Maximum quality",
+                    detail = "Finer frequency resolution, which helps with dense or low-register " +
+                        "harmony. Noticeably slower and warmer on the device.",
+                    onClick = { onChoose(AnalysisProfile.MAXIMUM_QUALITY) },
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ProfileRow(name: String, detail: String, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(name, style = MaterialTheme.typography.titleSmall)
+        Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

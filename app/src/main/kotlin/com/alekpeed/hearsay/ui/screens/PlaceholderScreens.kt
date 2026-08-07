@@ -57,16 +57,6 @@ fun EarTrainingPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScr
 )
 
 @Composable
-fun ProcessingPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScreen(
-    title = "Processing queue",
-    explanation = "Stem separation, beat tracking and chord recognition will report their progress here, " +
-        "stage by stage, and can be paused or cancelled.",
-    blockedBy = "Not built yet. The playback, project and correction layers come first, so that analysis " +
-        "output has somewhere trustworthy to land.",
-    modifier = modifier,
-)
-
-@Composable
 fun SettingsPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScreen(
     title = "Settings",
     explanation = "Processing profile, notation preferences, model downloads and storage management " +
