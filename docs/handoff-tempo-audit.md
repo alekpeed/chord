@@ -119,7 +119,7 @@ Beyond the tempo problem, audit for correctness bugs, real inefficiencies, and m
 Some context on where the weak ground is:
 
 - **Nothing was tested on a physical device until very recently.** Every bug found on hardware in
-  one evening — a service race that stranded analyzes, memory exhaustion, a chart erased at the
+  one evening — a service race that stranded analyses, memory exhaustion, a chart erased at the
   moment it was saved, a 140 ms systematic beat offset — was invisible to a full green test suite.
   Treat "the tests pass" as weak evidence.
 - **`MediaCodec` cannot be executed off-device**, so `PcmDecoder` has never actually run in any test
