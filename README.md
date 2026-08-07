@@ -11,6 +11,19 @@ stay reachable, corrections are yours, and the machine's original answer is neve
 **Tablet-first.** The primary interface is a large table that follows the song bar by bar, meant to
 be read at arm's length from a music stand.
 
+## Download
+
+**[hearsay.apk](https://github.com/alekpeed/chord/releases/latest/download/hearsay.apk)**
+
+That link never changes and always serves the newest build. Every push rebuilds the APK and
+replaces the release behind it, so it is a moving target by design; the same build is also attached
+under a versioned name if you need to tell two downloads apart.
+
+Open it on the tablet and Android will ask permission to install from your browser or file manager —
+the app is not on the Play Store. Requires Android 12 or newer.
+
+If the link 404s, the build has not finished yet. `Actions → APK` shows what happened.
+
 ## Status
 
 **The app listens to a recording and produces a chord chart.** Import a file you own, press Analyse,
@@ -58,6 +71,42 @@ Requires JDK 17 or newer and an Android SDK with platform 37 and build-tools 37 
 
 Point the build at your SDK with a `local.properties` containing `sdk.dir=/path/to/android-sdk`,
 or set `ANDROID_HOME`.
+
+### Signing
+
+Release builds are signed with a key taken from the environment, or from `local.properties`, and
+never from a file in this repository. Without one they fall back to the debug key so
+`assembleRelease` still produces something installable.
+
+That fallback has one consequence worth knowing: the debug key is generated per machine, and CI
+generates a fresh one on every run. **Until a real key is configured, installing a new APK means
+uninstalling the old one first** — Android refuses to replace an app with a build signed by a
+different key, and it reports this as a vague "app not installed".
+
+To fix that permanently, make a key once and hand it to CI:
+
+```bash
+keytool -genkeypair -v -keystore hearsay.jks -alias hearsay \
+        -keyalg RSA -keysize 2048 -validity 10000
+
+base64 -w0 hearsay.jks     # paste this into the secret below
+```
+
+Then add four repository secrets under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+| --- | --- |
+| `HEARSAY_KEYSTORE_BASE64` | the base64 text printed above |
+| `HEARSAY_KEYSTORE_PASSWORD` | the store password you chose |
+| `HEARSAY_KEY_ALIAS` | `hearsay` |
+| `HEARSAY_KEY_PASSWORD` | the key password (same as the store password unless you changed it) |
+
+Keep `hearsay.jks` somewhere safe and out of the repository — `.gitignore` blocks `*.jks`, because
+anyone holding that file can publish an update Android will install over yours. Losing it means
+every future build needs an uninstall-and-reinstall.
+
+For local release builds, put `HEARSAY_KEYSTORE=/path/to/hearsay.jks` and the three passwords in
+`local.properties` instead.
 
 ## Module layout
 

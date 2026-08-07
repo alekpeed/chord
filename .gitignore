@@ -12,6 +12,10 @@ build/
 *.hprof
 *.keystore
 !debug.keystore
+# A release signing key must never land in the repository: anyone holding it can publish an
+# update that Android will install over yours.
+*.jks
+/dist/
 
 # Training artefacts: models and features are large and regenerable.
 training/.venv/

@@ -1,9 +1,23 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
 }
+
+// Release signing details come from the environment (CI secrets) or from local.properties, never
+// from a file in the repository. When they are absent the release build falls back to the debug
+// key so `assembleRelease` still produces something installable — but that key is generated per
+// machine, so an APK signed with it cannot be installed over one from a different machine.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
+fun signingSecret(name: String): String? =
+    System.getenv(name)?.takeIf(String::isNotBlank) ?: localProperties.getProperty(name)
 
 android {
     namespace = "com.alekpeed.hearsay"
@@ -19,6 +33,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        val keystore = signingSecret("HEARSAY_KEYSTORE")?.let(::file)
+        if (keystore != null && keystore.exists()) {
+            create("release") {
+                storeFile = keystore
+                storePassword = signingSecret("HEARSAY_KEYSTORE_PASSWORD")
+                keyAlias = signingSecret("HEARSAY_KEY_ALIAS") ?: "hearsay"
+                keyPassword = signingSecret("HEARSAY_KEY_PASSWORD")
+                    ?: signingSecret("HEARSAY_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -27,7 +54,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
