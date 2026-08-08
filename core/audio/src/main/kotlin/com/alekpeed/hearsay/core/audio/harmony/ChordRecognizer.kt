@@ -65,8 +65,9 @@ class ChordRecognizer(
         val priors = contextPriors(key)
         val emissions = observations.map { emissionScores(it, priors) }
         val path = viterbi(emissions)
+        val refined = refineSpans(spans, path, chroma)
 
-        return spans.mapIndexed { index, (start, end) ->
+        return refined.mapIndexed { index, (start, end) ->
             val state = path[index]
             val scores = emissions[index]
             val bassVector = bassChroma?.averageBetween(start, end)
@@ -190,6 +191,91 @@ class ChordRecognizer(
         scores[ChordTemplates.NoChordIndex] =
             if (energy < 1e-4f) 1f else noChordThreshold
         return scores
+    }
+
+    /**
+     * Moves each chord change to where the harmony changes, instead of the nearest beat.
+     *
+     * The Viterbi decode is beat-synchronous on purpose — averaging chroma over a beat is what
+     * keeps the labels stable — but placing the *change* on a beat is a separate decision, and it
+     * is the one the listener notices. Snapping every boundary to the grid puts a change up to
+     * half a beat from where it is played, and an anticipated chord — pushed an eighth ahead of
+     * the bar, which is everywhere in this repertoire — cannot be represented at all. The player
+     * hears the highlight move against the music, however good the grid is.
+     *
+     * So once the decoder has decided *what* the chords are, each boundary between two different
+     * chords is re-placed at the frame that best divides the window into "still matches the old
+     * chord" and "already matches the new one". The search stays between the midpoints of the two
+     * spans, so boundaries cannot cross and every span keeps most of the evidence that named it.
+     */
+    private fun refineSpans(
+        spans: List<Pair<Long, Long>>,
+        path: IntArray,
+        chroma: Chromagram,
+    ): List<Pair<Long, Long>> {
+        if (spans.size < 2) return spans
+        val starts = LongArray(spans.size) { spans[it].first }
+        for (index in 1 until spans.size) {
+            if (path[index] == path[index - 1]) continue
+            starts[index] = bestSplitMs(
+                chroma = chroma,
+                fromMs = (spans[index - 1].first + spans[index - 1].second) / 2,
+                toMs = (spans[index].first + spans[index].second) / 2,
+                before = path[index - 1],
+                after = path[index],
+                fallbackMs = spans[index].first,
+            )
+        }
+        return List(spans.size) { index ->
+            starts[index] to if (index + 1 < spans.size) starts[index + 1] else spans.last().second
+        }
+    }
+
+    /** The time whose split leaves the most old-chord evidence before it and new-chord after. */
+    private fun bestSplitMs(
+        chroma: Chromagram,
+        fromMs: Long,
+        toMs: Long,
+        before: Int,
+        after: Int,
+        fallbackMs: Long,
+    ): Long {
+        val first = ((fromMs / 1000.0) / chroma.hopSeconds).toInt().coerceIn(0, chroma.frameCount - 1)
+        val last = ((toMs / 1000.0) / chroma.hopSeconds).toInt().coerceIn(first, chroma.frameCount - 1)
+        if (last - first < 2) return fallbackMs
+
+        // Splitting at frame t scores every frame before t against the old chord and the rest
+        // against the new one. Walking t across the window trades one frame at a time between the
+        // two sums, so the whole search is one pass. The grid boundary is the incumbent: where the
+        // evidence is flat — both chords fitting the whole window equally — the beat is still the
+        // best guess there is, and only a strictly better division moves the change off it.
+        val gridSplit = ((fallbackMs / 1000.0) / chroma.hopSeconds).toInt().coerceIn(first + 1, last - 1)
+        var score = 0f
+        for (frame in first until last) score += frameMatch(chroma.frames[frame], after)
+        var gridScore = Float.NEGATIVE_INFINITY
+        var bestSplit = gridSplit
+        var bestScore = Float.NEGATIVE_INFINITY
+        for (split in first + 1 until last) {
+            score += frameMatch(chroma.frames[split - 1], before) - frameMatch(chroma.frames[split - 1], after)
+            if (split == gridSplit) gridScore = score
+            if (score > bestScore) {
+                bestScore = score
+                bestSplit = split
+            }
+        }
+        return chroma.timeMsOfFrame(if (bestScore > gridScore) bestSplit else gridSplit)
+    }
+
+    /** How much one frame of chroma sounds like one decoded state, on the emission model's terms. */
+    private fun frameMatch(frame: FloatArray, state: Int): Float {
+        if (state == ChordTemplates.NoChordIndex) return noChordThreshold
+        val candidate = ChordTemplates.Candidates[state]
+        var dot = 0f
+        for (pc in 0 until 12) {
+            val weight = if (extensionPenalty != 1f && candidate.isExtensionTone(pc)) extensionPenalty else 1f
+            dot += frame[pc] * candidate.vector[pc] * weight
+        }
+        return dot
     }
 
     private fun viterbi(emissions: List<FloatArray>): IntArray {
