@@ -71,8 +71,11 @@ class LibraryViewModel @Inject constructor(
     fun onImport(uri: String, storageMode: StorageMode, profile: AnalysisProfile = AnalysisProfile.BALANCED) {
         viewModelScope.launch {
             importing.value = true
-            val result = importRepository.import(uri, storageMode, profile)
-            importing.value = false
+            val result = try {
+                importRepository.import(uri, storageMode, profile)
+            } finally {
+                importing.value = false
+            }
             _messages.value = when (result) {
                 is ImportResult.Success ->
                     LibraryMessage.Imported(projectRepository.getProject(result.projectId)?.project?.title.orEmpty())

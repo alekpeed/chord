@@ -38,6 +38,44 @@ class AudioAnalyzerTest {
     }
 
     @Test
+    fun `harmonic rhythm selects the tactus of an arpeggiated ballad`() {
+        val (samples, _) = SignalGenerator.progression(
+            symbols = listOf("C", "Am", "F", "G"),
+            bpm = 65f,
+            beatsPerChord = 4,
+            repeats = 2,
+            strikesPerBeat = 2,
+        )
+
+        val result = analyze(samples)
+
+        assertTrue(
+            "Expected the roughly 65 BPM tactus rather than its double, got ${result.tempoBpm}",
+            abs(result.tempoBpm - 65f) < 6f,
+        )
+        assertTrue(
+            "The fixture did not expose the competing double-time level: ${result.tempoCandidates}",
+            result.tempoCandidates.any { abs(it.bpm - 130f) < 10f },
+        )
+        assertEquals(4, result.beatsPerMeasure)
+        assertTrue("Expected an honest tempo confidence", result.tempoConfidence < 0.9f)
+    }
+
+    @Test
+    fun `harmonic rhythm does not halve a genuine tempo`() {
+        val (samples, _) = SignalGenerator.progression(
+            symbols = listOf("C", "Am", "F", "G"),
+            bpm = 132f,
+            beatsPerChord = 4,
+            repeats = 2,
+        )
+
+        val result = analyze(samples)
+
+        assertTrue("Expected about 132 BPM, got ${result.tempoBpm}", abs(result.tempoBpm - 132f) < 8f)
+    }
+
+    @Test
     fun `places beats at a steady spacing`() {
         val result = analyze(SignalGenerator.clickTrack(bpm = 120f, bars = 16))
         val beats = result.chart.beats

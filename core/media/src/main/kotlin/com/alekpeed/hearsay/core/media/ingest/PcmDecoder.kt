@@ -8,6 +8,7 @@ import android.net.Uri
 import com.alekpeed.hearsay.core.common.dispatchers.Dispatcher
 import com.alekpeed.hearsay.core.common.dispatchers.HearsayDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -107,6 +108,8 @@ class PcmDecoder @Inject constructor(
 
             onProgress(1f)
             Result.success(sink.toDecodedAudio())
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (error: Exception) {
             Result.failure(DecodeException(DecodeFailure.Unreadable(error.message ?: "Decoding failed")))
         } finally {
@@ -328,7 +331,7 @@ internal class DecodeSink(private val targetSampleRate: Int, private val maxOutp
 
         // A codec buffer can in principle end mid-frame. Carrying the remainder keeps the channel
         // alignment; dropping it would silently rotate left and right for the rest of the file.
-        while (shorts.hasRemaining()) {
+        while (shorts.hasRemaining() && !isFull) {
             carry[carried++] = shorts.get() / 32_768f
             if (carried == channels) {
                 carry.copyInto(frame)

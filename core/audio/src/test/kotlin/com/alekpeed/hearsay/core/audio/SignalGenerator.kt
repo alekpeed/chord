@@ -32,6 +32,7 @@ object SignalGenerator {
         repeats: Int = 2,
         withClick: Boolean = true,
         rootOctave: Int = 3,
+        strikesPerBeat: Int = 1,
     ): Pair<FloatArray, List<Chord>> {
         val beatSeconds = 60.0 / bpm
         val chordSeconds = beatSeconds * beatsPerChord
@@ -46,13 +47,26 @@ object SignalGenerator {
             val midiNotes = voiceChord(chord, rootOctave)
 
             // Restrike on every beat so there is an onset to find, with the downbeat loudest.
-            for (beat in 0 until beatsPerChord) {
-                val strikeStart = chordStart + (beat * beatSeconds * SampleRate).toInt()
-                val amplitude = if (beat == 0) 0.9f else 0.55f
-                for (midi in midiNotes) {
-                    addTone(out, strikeStart, midiToHz(midi), amplitude / midiNotes.size, beatSeconds * 1.6)
+            for (strike in 0 until beatsPerChord * strikesPerBeat) {
+                val strikeStart = chordStart + (strike * beatSeconds / strikesPerBeat * SampleRate).toInt()
+                val amplitude = when {
+                    strike == 0 -> 0.9f
+                    strike % strikesPerBeat == 0 -> 0.55f
+                    else -> 0.45f
                 }
-                if (withClick) addClick(out, strikeStart, if (beat == 0) 0.5f else 0.28f)
+                for (midi in midiNotes) {
+                    addTone(
+                        out,
+                        strikeStart,
+                        midiToHz(midi),
+                        amplitude / midiNotes.size,
+                        beatSeconds * 1.6 / strikesPerBeat,
+                    )
+                }
+                if (withClick) {
+                    val click = if (strike == 0) 0.5f else if (strike % strikesPerBeat == 0) 0.28f else 0.22f
+                    addClick(out, strikeStart, click)
+                }
             }
         }
 
