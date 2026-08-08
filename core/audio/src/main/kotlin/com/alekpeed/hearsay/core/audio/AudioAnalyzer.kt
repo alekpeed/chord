@@ -19,6 +19,7 @@ import com.alekpeed.hearsay.core.audio.rhythm.TempoCandidate
 import com.alekpeed.hearsay.core.audio.rhythm.TempoCurve
 import com.alekpeed.hearsay.core.audio.rhythm.TempoEstimate
 import com.alekpeed.hearsay.core.audio.rhythm.TempoEstimator
+import com.alekpeed.hearsay.core.audio.rhythm.TrackedBeat
 import com.alekpeed.hearsay.core.audio.structure.BassTracker
 import com.alekpeed.hearsay.core.audio.structure.SectionDetector
 import com.alekpeed.hearsay.core.model.music.Key
@@ -216,6 +217,7 @@ class AudioAnalyzer(
             downbeatPhase = downbeatPhase,
             sections = sections,
             tempo = tempo.bpm,
+            beatDetected = rhythm.beatDetected,
             tempoSpans = rhythm.curve.segments(),
             hopSeconds = rhythm.curve.hopSeconds,
             durationMs = mono.durationMs,
@@ -245,6 +247,8 @@ class AudioAnalyzer(
         val curve: TempoCurve,
         val tempoCandidates: List<TempoCandidate>,
         val beatsPerMeasure: Int?,
+        /** Per beat, whether the recording actually put anything there. */
+        val beatDetected: List<Boolean>,
     )
 
     private class SeparatedFeatures(val envelope: OnsetEnvelope, val chroma: Chromagram)
@@ -289,12 +293,14 @@ class AudioAnalyzer(
         val (global, candidates) = TempoEstimator.estimateWithCandidates(envelope)
         val selection = MetricalHypothesisEvaluator.select(envelope, chroma, global, candidates)
         val curve = TempoEstimator.curve(envelope, selection.tempo.bpm)
-        val beatFrames = BeatTracker.track(envelope, curve)
+        val tracked = BeatTracker.trackDetailed(envelope, curve)
+        val beatFrames = tracked.map(TrackedBeat::frame)
         val tempo = TempoEstimate(
             curve.medianBpm.takeIf { it > 0f } ?: selection.tempo.bpm,
             selection.tempo.confidence,
         )
         return RhythmAnalysis(
+            beatDetected = tracked.map(TrackedBeat::detected),
             envelope = envelope,
             tempo = tempo,
             beatFrames = beatFrames,
@@ -402,6 +408,7 @@ class AudioAnalyzer(
         downbeatPhase: Int,
         sections: List<com.alekpeed.hearsay.core.audio.structure.DetectedSection>,
         tempo: Float,
+        beatDetected: List<Boolean>,
         tempoSpans: List<com.alekpeed.hearsay.core.audio.rhythm.TempoSpan>,
         hopSeconds: Double,
         durationMs: Long,
@@ -417,7 +424,10 @@ class AudioAnalyzer(
                 timeMs = timeMs,
                 beatInMeasure = position + 1,
                 measureNumber = Math.floorDiv(index - downbeatPhase, beatsPerMeasure) + 1,
-                confidence = 0.7f,
+                // A beat the tracker filled in was inferred from the beats either side of it, not
+                // heard. Reporting it at the same confidence as a detected beat would present an
+                // inference as an observation.
+                confidence = if (beatDetected.getOrElse(index) { true }) DetectedBeatConfidence else FilledBeatConfidence,
                 source = AnalysisSource.MACHINE,
             )
         }
@@ -588,6 +598,12 @@ class AudioAnalyzer(
 
         /** How often the separation reports progress; it is by far the longest stage. */
         const val ProgressReports = 50
+
+        /** A beat the tracker found in the recording. */
+        const val DetectedBeatConfidence = 0.7f
+
+        /** A beat inferred to bridge a gap the tracker could not fill from evidence. */
+        const val FilledBeatConfidence = 0.35f
 
         /** A region this short, sharing a root with its neighbour, is decay rather than harmony. */
     }
