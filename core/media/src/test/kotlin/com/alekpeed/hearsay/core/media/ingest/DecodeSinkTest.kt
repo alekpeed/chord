@@ -71,4 +71,17 @@ class DecodeSinkTest {
 
         assertEquals(sizeBeforeReconfigure, sink.size)
     }
+
+    @Test
+    fun `the duration cap is enforced inside a codec buffer`() {
+        val sink = DecodeSink(targetSampleRate = 22_050, maxOutputSamples = 3)
+        sink.configure(channels = 1, sourceRate = 22_050, expectedOutputSamples = 3)
+        val buffer = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN)
+        repeat(10) { buffer.putShort(1000) }
+        buffer.rewind()
+
+        sink.append(buffer, bufferInfoFor(buffer.capacity()))
+
+        assertEquals(3, sink.toDecodedAudio().samples.size)
+    }
 }

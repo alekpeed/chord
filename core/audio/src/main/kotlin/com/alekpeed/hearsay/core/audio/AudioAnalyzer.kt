@@ -13,6 +13,7 @@ import com.alekpeed.hearsay.core.audio.harmony.RecognizedChord
 import com.alekpeed.hearsay.core.audio.harmony.chordChangeStrength
 import com.alekpeed.hearsay.core.audio.rhythm.BeatTracker
 import com.alekpeed.hearsay.core.audio.rhythm.DownbeatEstimator
+import com.alekpeed.hearsay.core.audio.rhythm.MetricalHypothesisEvaluator
 import com.alekpeed.hearsay.core.audio.rhythm.OnsetEnvelope
 import com.alekpeed.hearsay.core.audio.rhythm.TempoCandidate
 import com.alekpeed.hearsay.core.audio.rhythm.TempoCurve
@@ -170,7 +171,7 @@ class AudioAnalyzer(
         onProgress(AnalysisProgress(AnalysisStageId.SEPARATING, 1f))
 
         onProgress(AnalysisProgress(AnalysisStageId.RHYTHM, 0f))
-        val rhythm = analyzeRhythm(separated.envelope)
+        val rhythm = analyzeRhythm(separated.envelope, separated.chroma)
         if (rhythm.beatFrames.size < 4) {
             warnings += "No steady pulse was found, so the bar grid is a guess."
         }
@@ -190,7 +191,7 @@ class AudioAnalyzer(
         onProgress(AnalysisProgress(AnalysisStageId.HARMONY, 1f))
 
         onProgress(AnalysisProgress(AnalysisStageId.STRUCTURE, 0f))
-        val structure = analyzeStructure(chroma, envelope, beatFrames, beatTimesMs)
+        val structure = analyzeStructure(chroma, envelope, beatFrames, beatTimesMs, rhythm.beatsPerMeasure)
         val beatsPerMeasure = structure.beatsPerMeasure
         val downbeatPhase = structure.downbeatPhase
         val sections = structure.sections
@@ -243,6 +244,7 @@ class AudioAnalyzer(
         val beatTimesMs: List<Long>,
         val curve: TempoCurve,
         val tempoCandidates: List<TempoCandidate>,
+        val beatsPerMeasure: Int?,
     )
 
     private class SeparatedFeatures(val envelope: OnsetEnvelope, val chroma: Chromagram)
@@ -280,21 +282,26 @@ class AudioAnalyzer(
         return SeparatedFeatures(onsets.build(), chroma.build())
     }
 
-    private fun analyzeRhythm(envelope: OnsetEnvelope): RhythmAnalysis {
+    private fun analyzeRhythm(envelope: OnsetEnvelope, chroma: Chromagram): RhythmAnalysis {
         // The curve, not one number. A recording that drifts or opens in free time cannot be
         // followed by a constant period, and the grid sliding out of phase is what makes the
         // playing position move at the wrong speed against the music.
-        val curve = TempoEstimator.curve(envelope)
         val (global, candidates) = TempoEstimator.estimateWithCandidates(envelope)
+        val selection = MetricalHypothesisEvaluator.select(envelope, chroma, global, candidates)
+        val curve = TempoEstimator.curve(envelope, selection.tempo.bpm)
         val beatFrames = BeatTracker.track(envelope, curve)
-        val tempo = TempoEstimate(curve.medianBpm.takeIf { it > 0f } ?: global.bpm, global.confidence)
+        val tempo = TempoEstimate(
+            curve.medianBpm.takeIf { it > 0f } ?: selection.tempo.bpm,
+            selection.tempo.confidence,
+        )
         return RhythmAnalysis(
             envelope = envelope,
             tempo = tempo,
             beatFrames = beatFrames,
             beatTimesMs = beatFrames.map { envelope.timeMsOfFrame(it) },
             curve = curve,
-            tempoCandidates = candidates,
+            tempoCandidates = selection.candidates,
+            beatsPerMeasure = selection.winner?.beatsPerMeasure,
         )
     }
 
@@ -366,9 +373,11 @@ class AudioAnalyzer(
         envelope: OnsetEnvelope,
         beatFrames: List<Int>,
         beatTimesMs: List<Long>,
+        selectedBeatsPerMeasure: Int?,
     ): StructureAnalysis {
         val changeStrength = chordChangeStrength(chroma, beatTimesMs)
-        val beatsPerMeasure = DownbeatEstimator.estimateBeatsPerMeasure(beatFrames, envelope, changeStrength)
+        val beatsPerMeasure = selectedBeatsPerMeasure
+            ?: DownbeatEstimator.estimateBeatsPerMeasure(beatFrames, envelope, changeStrength)
         val downbeatPhase = DownbeatEstimator.estimate(beatFrames, envelope, changeStrength, beatsPerMeasure)
         val sections = if (settings.detectSections && beatTimesMs.size >= 2) {
             SectionDetector.detect(chroma, beatTimesMs, beatsPerMeasure)

@@ -9,6 +9,7 @@ import android.provider.OpenableColumns
 import com.alekpeed.hearsay.core.common.dispatchers.Dispatcher
 import com.alekpeed.hearsay.core.common.dispatchers.HearsayDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
@@ -61,6 +62,8 @@ class MediaProbe @Inject constructor(
                 fileSizeBytes = fileSize(uri),
                 hasAudioTrack = audio != null,
             )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (error: Exception) {
             null
         } finally {
@@ -75,7 +78,7 @@ class MediaProbe @Inject constructor(
      * separate real songs, and reading a whole video file to import its audio is not worth the wait.
      */
     suspend fun checksum(uri: Uri): String? = withContext(ioDispatcher) {
-        runCatching {
+        try {
             val digest = MessageDigest.getInstance("SHA-256")
             context.contentResolver.openInputStream(uri)?.use { stream ->
                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -86,10 +89,14 @@ class MediaProbe @Inject constructor(
                     digest.update(buffer, 0, read)
                     total += read
                 }
-            } ?: return@runCatching null
+            } ?: return@withContext null
             fileSize(uri)?.let { digest.update(it.toString().toByteArray()) }
             digest.digest().joinToString("") { "%02x".format(it) }
-        }.getOrNull()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            null
+        }
     }
 
     private fun displayName(uri: Uri): String? = runCatching {

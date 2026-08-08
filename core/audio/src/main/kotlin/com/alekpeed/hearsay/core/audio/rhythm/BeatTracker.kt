@@ -250,7 +250,7 @@ object TempoEstimator {
      * The preference for a human counting speed is applied to the whole path once, through the
      * emission scores, rather than being re-litigated by every window independently.
      */
-    fun curve(envelope: OnsetEnvelope): TempoCurve {
+    fun curve(envelope: OnsetEnvelope, anchorBpm: Float = estimate(envelope).bpm): TempoCurve {
         val minLag = (60.0 / MaxBpm / envelope.hopSeconds).roundToInt().coerceAtLeast(1)
         val maxLag = (60.0 / MinBpm / envelope.hopSeconds).roundToInt().coerceAtMost(envelope.size - 1)
         if (envelope.size < 4 || maxLag <= minLag) {
@@ -264,7 +264,7 @@ object TempoEstimator {
         // Windows are free to follow drift inside the band; they are not free to re-decide that the
         // recording is at double or half time, because a window cannot see enough to judge that and
         // the median of window-level mistakes is what the app reports as the tempo.
-        val anchorLag = 60.0 / estimate(envelope).bpm / envelope.hopSeconds
+        val anchorLag = 60.0 / anchorBpm / envelope.hopSeconds
         val lowLag = (anchorLag / DriftRange).roundToInt().coerceAtLeast(minLag)
         val highLag = (anchorLag * DriftRange).roundToInt().coerceAtMost(maxLag)
         val lags = if (highLag > lowLag) (lowLag..highLag).toList() else (minLag..maxLag).toList()
