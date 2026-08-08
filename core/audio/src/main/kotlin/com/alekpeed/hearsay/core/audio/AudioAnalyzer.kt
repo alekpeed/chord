@@ -7,6 +7,7 @@ import com.alekpeed.hearsay.core.audio.dsp.normalized
 import com.alekpeed.hearsay.core.audio.dsp.resampledTo
 import com.alekpeed.hearsay.core.audio.feature.Chromagram
 import com.alekpeed.hearsay.core.audio.harmony.ChordRecognizer
+import com.alekpeed.hearsay.core.audio.harmony.HarmonicNovelty
 import com.alekpeed.hearsay.core.audio.harmony.KeyContext
 import com.alekpeed.hearsay.core.audio.harmony.KeyEstimator
 import com.alekpeed.hearsay.core.audio.harmony.RecognizedChord
@@ -362,10 +363,19 @@ class AudioAnalyzer(
             builder.build()
         }
 
-        val chords = if (beatTimesMs.size >= 2) {
+        // Where the harmony turns over, decided from the audio and not from the labels. The beat
+        // grid alone cannot represent a change that falls between beats, and the decoder alone
+        // cannot report one it was too unsure to commit to; between them those are most of the
+        // changes a player actually watches for.
+        val novelty = HarmonicNovelty.of(chroma)
+        val changeTimesMs = HarmonicNovelty.peaks(novelty, chroma.hopSeconds)
+            .map { chroma.timeMsOfFrame(it) }
+        val boundaries = mergeBoundaries(beatTimesMs, changeTimesMs, chroma.hopSeconds)
+
+        val chords = if (boundaries.size >= 2) {
             recognizer.recognize(
                 chroma = chroma,
-                beatTimesMs = beatTimesMs,
+                beatTimesMs = boundaries,
                 bassChroma = bassChroma,
                 preferFlats = preferFlats,
                 key = KeyContext(
@@ -373,11 +383,65 @@ class AudioAnalyzer(
                     isMinor = keyEstimate.isMinor,
                     confidence = keyEstimate.confidence,
                 ),
+                changeLikelihood = spanChangeLikelihood(boundaries, changeTimesMs, novelty, chroma),
             )
         } else {
             emptyList()
         }
         return HarmonyAnalysis(chroma, keyEstimate, preferFlats, bassBuffer, chords)
+    }
+
+    /**
+     * Beats and detected changes together, as the places a chord is allowed to start.
+     *
+     * Both, rather than either. Detected changes carry the timing the grid cannot express; the
+     * grid carries the changes the detector missed, so adding one never costs what the other
+     * already found. Two boundaries closer together than a couple of frames are one boundary, and
+     * the detected one wins — it is the one measured from the audio.
+     */
+    private fun mergeBoundaries(beatTimesMs: List<Long>, changeTimesMs: List<Long>, hopSeconds: Double): List<Long> {
+        if (changeTimesMs.isEmpty()) return beatTimesMs
+        val tolerance = (hopSeconds * 1000 * BoundaryMergeHops).toLong().coerceAtLeast(1)
+        val out = mutableListOf<Long>()
+        for (time in (beatTimesMs + changeTimesMs).sorted()) {
+            val last = out.lastOrNull()
+            if (last == null || time - last > tolerance) {
+                out += time
+            } else if (time in changeTimesMs && last !in changeTimesMs) {
+                out[out.lastIndex] = time
+            }
+        }
+        return out
+    }
+
+    /**
+     * How much each span's start looks like a real change, for the decoder to weigh.
+     *
+     * Only detected change points count, not the raw novelty under every boundary. Reading novelty
+     * everywhere relaxes the decoder's stickiness a little at every beat, and a little everywhere
+     * is enough to let it flicker to a related chord mid-phrase — measured: a spurious F appearing
+     * inside a Dm7 that had been read correctly before. A change point is a claim about one moment
+     * and the relief belongs at that moment alone.
+     */
+    private fun spanChangeLikelihood(
+        boundaries: List<Long>,
+        changeTimesMs: List<Long>,
+        novelty: FloatArray,
+        chroma: Chromagram,
+    ): FloatArray {
+        val out = FloatArray(maxOf(0, boundaries.size - 1))
+        if (changeTimesMs.isEmpty()) return out
+        val peak = novelty.maxOrNull() ?: 0f
+        if (peak <= 0f) return out
+
+        val changes = changeTimesMs.toHashSet()
+        for (index in out.indices) {
+            if (boundaries[index] !in changes) continue
+            val frame = ((boundaries[index] / 1000.0) / chroma.hopSeconds).toInt()
+                .coerceIn(0, maxOf(0, novelty.size - 1))
+            out[index] = (novelty[frame] / peak).coerceIn(0f, 1f)
+        }
+        return out
     }
 
     private class StructureAnalysis(
@@ -647,6 +711,9 @@ class AudioAnalyzer(
          * edge of a pause is not smeared into the bar beside it. At the default hop that is 93 ms.
          */
         const val LevelWindowHops = 4
+
+        /** Boundaries within this many frames of each other describe the same moment. */
+        const val BoundaryMergeHops = 2
 
         /** A region this short, sharing a root with its neighbor, is decay rather than harmony. */
     }

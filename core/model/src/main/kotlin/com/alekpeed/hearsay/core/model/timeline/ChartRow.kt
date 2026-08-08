@@ -52,7 +52,9 @@ object ChartRowBuilder {
         var previousSection: String? = null
 
         return chart.chordEvents.mapIndexed { index, event ->
-            val beat = chart.beatAt(event.startMs)
+            // The nearest beat, not the one sounding: a chord struck ahead of its downbeat begins
+            // inside the previous bar and belongs to the next, and the row must say the latter.
+            val beat = chart.nearestBeatTo(event.startMs)
             val section = chart.sectionAt(event.startMs)
             val chord = event.chord
                 ?.let { if (options.simplify) simplify(it) else it }

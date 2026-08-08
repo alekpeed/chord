@@ -50,6 +50,8 @@ class ChordRecognizer(
      * @param beatTimesMs boundaries of each analysis span; N boundaries yield N-1 spans.
      * @param bassChroma optional low-band chroma used to name inversions and slash chords.
      * @param key the estimated key, which decides between chords the chroma cannot separate.
+     * @param changeLikelihood per span, how strongly the audio says the harmony turned over at its
+     *   start. Where it is high the decoder's reluctance to change chord is relaxed.
      */
     fun recognize(
         chroma: Chromagram,
@@ -57,6 +59,7 @@ class ChordRecognizer(
         bassChroma: Chromagram? = null,
         preferFlats: Boolean = false,
         key: KeyContext? = null,
+        changeLikelihood: FloatArray? = null,
     ): List<RecognizedChord> {
         if (beatTimesMs.size < 2) return emptyList()
 
@@ -64,7 +67,7 @@ class ChordRecognizer(
         val observations = spans.map { (start, end) -> chroma.averageBetween(start, end) }
         val priors = contextPriors(key)
         val emissions = observations.map { emissionScores(it, priors) }
-        val path = viterbi(emissions)
+        val path = viterbi(emissions, changeLikelihood)
         val refined = refineSpans(spans, path, chroma)
 
         return refined.mapIndexed { index, (start, end) ->
@@ -278,7 +281,21 @@ class ChordRecognizer(
         return dot
     }
 
-    private fun viterbi(emissions: List<FloatArray>): IntArray {
+    /**
+     * @param changeLikelihood how strongly the audio says the harmony turned over at each step.
+     *
+     * The self-transition bonus is the decoder's reluctance to change chord, and it is there for a
+     * good reason: without it the labels flicker on every passing tone. But it applies everywhere
+     * equally, including at the exact moment the harmony genuinely moves, and on material the
+     * templates find ambiguous it is enough to hold a label straight through a real change. The
+     * chart then shows no boundary at all and the highlight sits still while the music moves —
+     * which is the failure that matters most, because a wrong name can be corrected and a change
+     * that was never detected cannot be.
+     *
+     * So the reluctance is relaxed in proportion to the evidence that this is a change point. Not
+     * removed: where the harmony is steady the decoder stays exactly as sticky as before.
+     */
+    private fun viterbi(emissions: List<FloatArray>, changeLikelihood: FloatArray?): IntArray {
         val states = ChordTemplates.StateCount
         val steps = emissions.size
         val delta = Array(steps) { FloatArray(states) }
@@ -289,12 +306,14 @@ class ChordRecognizer(
         val relatedness = relatednessMatrix()
 
         for (step in 1 until steps) {
+            val change = changeLikelihood?.getOrNull(step)?.coerceIn(0f, 1f) ?: 0f
+            val stickiness = selfTransitionBonus * (1f - ChangeRelief * change)
             for (state in 0 until states) {
                 var bestScore = Float.NEGATIVE_INFINITY
                 var bestPrevious = 0
                 for (previous in 0 until states) {
                     val transition = when {
-                        previous == state -> selfTransitionBonus
+                        previous == state -> stickiness
                         else -> relatedTransitionBonus * relatedness[previous][state]
                     }
                     val value = delta[step - 1][previous] + transition
@@ -384,6 +403,13 @@ class ChordRecognizer(
     private companion object {
         /** How far a confident key estimate is allowed to move the odds. */
         const val KeyPriorStrength = 0.9f
+
+        /**
+         * How much of the decoder's reluctance to change chord a full-strength change point buys
+         * back. Not all of it: even at an obvious boundary, holding the current chord should still
+         * win if the chroma after it plainly matches the chord before.
+         */
+        const val ChangeRelief = 0.60f
 
         // Relative to 1.0, which is "the key says nothing about this chord".
         const val TonicFit = 1.30f

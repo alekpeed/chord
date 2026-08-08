@@ -77,7 +77,7 @@ class ChordBoundaryTest {
         return out to changesMs
     }
 
-    private fun addTone(out: FloatArray, startMs: Double, frequency: Double, amplitude: Float) {
+    private fun addTone(out: FloatArray, startMs: Double, frequency: Double, amplitude: Float = 0.25f) {
         val start = (startMs / 1000.0 * rate).toInt()
         val length = (1.4 * beatMs / 1000.0 * rate).toInt()
         for (i in 0 until length) {
@@ -141,6 +141,83 @@ class ChordBoundaryTest {
         assertTrue("Expected chord changes to exist", errors.isNotEmpty())
         val median = errors.sorted()[errors.size / 2]
         assertTrue("On-grid changes drifted: median ${median}ms off the bar in $errors", median <= 120.0)
+    }
+
+    /** Seventh chords in close position, each sharing three of its four tones with its neighbors. */
+    private val closeVoicings = mapOf(
+        "Cmaj7" to listOf(48, 60, 64, 67, 71),
+        "Am7" to listOf(45, 60, 64, 67, 69),
+        "Em7" to listOf(40, 59, 62, 67, 71),
+        "Fmaj7" to listOf(41, 60, 65, 69, 72),
+    )
+
+    /** The close-voiced progression, changing every two beats, each change pushed 200 ms early. */
+    private fun closeVoicedProgression(symbols: List<String>): Pair<FloatArray, List<Double>> {
+        val chordMs = beatMs * 2
+        val push = 200.0
+        val totalMs = chordMs * symbols.size + beatMs
+        val out = FloatArray((totalMs / 1000.0 * rate).toInt())
+        val changes = mutableListOf<Double>()
+        for ((index, symbol) in symbols.withIndex()) {
+            val startMs = if (index == 0) 0.0 else index * chordMs - push
+            if (index > 0) changes += startMs
+            val endMs = if (index == symbols.size - 1) totalMs else (index + 1) * chordMs - push
+            var strikeMs = startMs
+            while (strikeMs < endMs - 1.0) {
+                for (midi in closeVoicings.getValue(symbol)) {
+                    addTone(out, strikeMs, 440.0 * 2.0.pow((midi - 69) / 12.0), amplitude = 0.18f)
+                }
+                strikeMs += beatMs
+            }
+        }
+        var beat = 0
+        while (beat * beatMs < totalMs) {
+            addClick(out, beat * beatMs, if (beat % 4 == 0) 0.9f else 0.55f)
+            beat++
+        }
+        var peak = 0f
+        for (sample in out) peak = maxOf(peak, abs(sample))
+        if (peak > 0f) for (i in out.indices) out[i] /= peak
+        return out to changes
+    }
+
+    @Test
+    fun `a change the labeler is unsure of still gets a boundary`() {
+        // The failure this exists for, and the one that matters most: a boundary used to exist
+        // only where the decoder changed its mind about the label. A change it was too unsure to
+        // commit to produced no boundary at all, so the highlight sat still while the music moved.
+        // A wrong chord name can be corrected on the chart; a change that was never detected
+        // cannot be, because there is nothing there to correct.
+        //
+        // Cmaj7 / Em7 / Am7 / Fmaj7 in close position share three of four tones with each other,
+        // which is where template matching is least certain and the decoder's bias toward staying
+        // put does the most damage. Measured on this fixture: the labels alone find 3 of 7 changes;
+        // detecting harmonic change independently of naming finds 5.
+        val (samples, changesMs) = closeVoicedProgression(
+            listOf("Cmaj7", "Em7", "Am7", "Cmaj7", "Em7", "Am7", "Fmaj7", "Am7"),
+        )
+        val result = AudioAnalyzer(AnalysisSettings.Balanced).analyze(samples, 1, rate)
+        val boundaries = result.chart.chordEvents.drop(1).map { it.startMs }
+
+        val found = changesMs.count { change -> boundaries.any { abs(it - change) <= 150.0 } }
+        assertTrue(
+            "Only $found of ${changesMs.size} harmonic changes produced a boundary " +
+                "(changes at $changesMs, boundaries at $boundaries)",
+            found >= 5,
+        )
+    }
+
+    @Test
+    fun `a chord struck ahead of its downbeat is labeled with the bar it belongs to`() {
+        // The row's bar number comes from a beat lookup. Anticipated changes start inside the
+        // previous bar, so a lookup that floors prints the bar before the one the player is in —
+        // and prints the same number on two consecutive rows.
+        val (samples, _) = anticipatedProgression(listOf("C", "F", "G", "Am", "C", "F", "G", "C"))
+        val result = AudioAnalyzer(AnalysisSettings.Balanced).analyze(samples, 1, rate)
+        val rows = com.alekpeed.hearsay.core.model.timeline.ChartRowBuilder.build(result.chart)
+
+        val repeated = rows.mapNotNull { it.measureNumber }.zipWithNext().count { it.first == it.second }
+        assertTrue("Bar numbers repeated on $repeated consecutive rows: ${rows.map { it.measureNumber }}", repeated == 0)
     }
 
     @Test

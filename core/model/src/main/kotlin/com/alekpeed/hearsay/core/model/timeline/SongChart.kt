@@ -51,6 +51,23 @@ class SongChart private constructor(
         return beats.getOrNull(index)
     }
 
+    /**
+     * The beat closest to [timeMs] in either direction — which bar a moment *belongs* to.
+     *
+     * Distinct from [beatAt], which asks which beat is currently sounding. A chord struck ahead of
+     * its downbeat, as they constantly are, starts inside the previous bar while plainly belonging
+     * to the next one; labeling it by the beat it happens to fall inside prints the wrong bar
+     * number and can print the same number on two rows in a row.
+     */
+    fun nearestBeatTo(timeMs: Long): BeatEvent? {
+        val index = floorIndex(beats.size) { beats[it].timeMs <= timeMs }
+        val before = beats.getOrNull(index)
+        val after = beats.getOrNull(index + 1)
+        if (before == null) return after
+        if (after == null) return before
+        return if (timeMs - before.timeMs <= after.timeMs - timeMs) before else after
+    }
+
     fun measureNumberAt(timeMs: Long): Int? = beatAt(timeMs)?.measureNumber
 
     fun sectionAt(timeMs: Long): SectionEvent? =
