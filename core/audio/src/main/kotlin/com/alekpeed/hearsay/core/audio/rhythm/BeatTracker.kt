@@ -415,7 +415,58 @@ object BeatTracker {
      * measured against what the music is doing there, not against an average of the whole song.
      */
     fun track(envelope: OnsetEnvelope, curve: TempoCurve): List<Int> =
-        trackDetailed(envelope, curve).map(TrackedBeat::frame)
+        trackDetailed(envelope, curve, levels = null).map(TrackedBeat::frame)
+
+    /**
+     * The grid, with beats removed where the recording was not sounding.
+     *
+     * [levels] is per-frame signal level, not onset flux. Flux measures change, so it is near zero
+     * during a sustained decay and cannot separate a rest from a held chord; level says plainly
+     * whether anything is there. The first attempt at this used flux and did nothing on a real
+     * recording, because a pause on analog tape carries hiss, room tone and a reverb tail while
+     * carrying no onsets at all.
+     */
+    fun trackDetailed(envelope: OnsetEnvelope, curve: TempoCurve, levels: FloatArray?): List<TrackedBeat> {
+        val grid = layGrid(envelope, curve)
+        return if (levels == null) grid else dropUnsoundedBeats(grid, levels, curve)
+    }
+
+    /**
+     * Removes beats sitting where the recording is quiet for at least a beat either side.
+     *
+     * The threshold is a fraction of the recording's own median level rather than an absolute one:
+     * "quiet" only means anything relative to how loud this particular recording is, and a mix
+     * mastered hot has a noise floor a ballad would call a note.
+     */
+    private fun dropUnsoundedBeats(
+        beats: List<TrackedBeat>,
+        levels: FloatArray,
+        curve: TempoCurve,
+    ): List<TrackedBeat> {
+        if (beats.size < 3 || levels.isEmpty()) return beats
+        val sorted = levels.sortedArray()
+        val median = sorted[sorted.size / 2]
+        if (median <= 0f) return beats
+        val floor = median * QuietFraction
+
+        val kept = beats.filter { beat ->
+            val period = curve.periodAt(beat.frame).roundToInt().coerceAtLeast(1)
+            !isQuietAround(levels, beat.frame, period, floor)
+        }
+        // Never hand back an empty grid: a recording quiet throughout is better served by the grid
+        // the tracker found than by nothing at all.
+        return if (kept.size >= MinimumGridBeats) kept else beats
+    }
+
+    /** Whether the recording stays below [floor] for a beat either side of this frame. */
+    private fun isQuietAround(levels: FloatArray, frame: Int, period: Int, floor: Float): Boolean {
+        var loudest = 0f
+        for (index in (frame - period / 2)..(frame + period / 2)) {
+            if (index !in levels.indices) continue
+            loudest = max(loudest, levels[index])
+        }
+        return loudest <= floor
+    }
 
     private fun layGrid(envelope: OnsetEnvelope, curve: TempoCurve): List<TrackedBeat> {
         if (envelope.size < 2) return emptyList()
@@ -469,54 +520,8 @@ object BeatTracker {
             cursor = backlink[cursor]
         }
         beats.reverse()
-        return dropSilentBeats(regularize(beats, envelope, curve), envelope, curve)
+        return regularize(beats, envelope, curve)
     }
-
-    /**
-     * Removes beats the recording never played.
-     *
-     * The dynamic program scores every frame and carries its total forward, so the backtrace lays a
-     * perfectly regular grid straight through a rest — silence costs it nothing. That is separate
-     * from gap filling and had to be fixed separately: a pause between an intro and a verse came
-     * back fully beaten, and the bar numbers counted through it.
-     *
-     * Only a sustained silence qualifies. A single quiet beat inside a phrase is ordinary music and
-     * keeps its place in the grid; what is dropped is a stretch where nothing sounded for at least
-     * a beat, measured against the recording's own quiet level rather than an absolute one.
-     */
-    private fun dropSilentBeats(
-        beats: List<TrackedBeat>,
-        envelope: OnsetEnvelope,
-        curve: TempoCurve,
-    ): List<TrackedBeat> {
-        if (beats.size < 3) return beats
-        val floor = silenceFloor(envelope)
-        val kept = beats.filter { beat ->
-            val period = curve.periodAt(beat.frame).roundToInt().coerceAtLeast(1)
-            !isSilentAround(envelope, beat.frame, period, floor)
-        }
-        // Never hand back an empty grid: a recording quiet throughout is better served by the grid
-        // the tracker found than by nothing at all.
-        return if (kept.size >= MinimumGridBeats) kept else beats
-    }
-
-    /** Whether nothing sounded for a beat either side of this frame. */
-    private fun isSilentAround(envelope: OnsetEnvelope, frame: Int, period: Int, floor: Float): Boolean {
-        val from = frame - period / 2
-        val to = frame + period / 2
-        var loudest = 0f
-        var counted = 0
-        for (index in from..to) {
-            if (index !in envelope.values.indices) continue
-            counted++
-            loudest = max(loudest, envelope.values[index])
-        }
-        return counted > 0 && loudest <= floor
-    }
-
-    /** The same grid, each beat saying whether the recording actually put anything there. */
-    fun trackDetailed(envelope: OnsetEnvelope, curve: TempoCurve): List<TrackedBeat> =
-        layGrid(envelope, curve)
 
     /**
      * Repairs the two ways the backtrace can misbehave.
@@ -620,6 +625,14 @@ object BeatTracker {
 
     /** Below this many surviving beats, keeping the original grid beats handing back nothing. */
     private const val MinimumGridBeats = 8
+
+    /**
+     * A frame below this fraction of the recording's median level counts as not sounding.
+     *
+     * Low enough that a quiet passage, a fade, or a sustained decay is still music; high enough
+     * that tape hiss and room tone in a genuine rest fall under it.
+     */
+    private const val QuietFraction = 0.10f
 }
 
 /** A beat in the grid, and whether the recording actually put anything there. */

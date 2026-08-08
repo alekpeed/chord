@@ -2,6 +2,9 @@ package com.alekpeed.hearsay.core.audio
 
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.sqrt
 
 /**
  * What happens to the bar count across a rest.
@@ -10,22 +13,74 @@ import org.junit.Test
  * beats, so the bar numbers marched on through silence. The tracker fills gaps wider than its
  * expected spacing, which is right when it under-detected a quiet passage and wrong when nothing
  * was playing. It could not tell those apart.
+ *
+ * The pause here is deliberately not digital zero. The first fix for this shipped green against a
+ * fixture of exact zeros and did nothing at all on the tablet, because a pause on a real recording
+ * carries tape hiss, room tone and the tail of the chord that just stopped. A test the wrong fix
+ * can pass is worse than no test, so the fixture below is quiet rather than absent.
  */
 class SilentGapTest {
 
     private val rate = SignalGenerator.SampleRate
 
-    /** An intro, then real silence, then a verse — both parts at the same tempo. */
+    /** Roughly 34 dB below the program material — a generous noise floor, not a subtle one. */
+    private val hissLevel = 0.02
+
+    /** An intro, then a pause with a noise floor and a decaying tail, then a verse at one tempo. */
     private fun introPauseVerse(bpm: Float, silentSeconds: Double): FloatArray {
         val (intro, _) = SignalGenerator.progression(listOf("C", "G"), bpm = bpm, beatsPerChord = 4, repeats = 2)
         val (verse, _) = SignalGenerator.progression(
             listOf("C", "Am", "F", "G"), bpm = bpm, beatsPerChord = 4, repeats = 2,
         )
-        val silence = FloatArray((silentSeconds * rate).toInt())
-        val out = FloatArray(intro.size + silence.size + verse.size)
+        val pause = quietPause((silentSeconds * rate).toInt(), after = intro)
+        val out = FloatArray(intro.size + pause.size + verse.size)
         intro.copyInto(out, 0)
-        verse.copyInto(out, intro.size + silence.size)
+        pause.copyInto(out, intro.size)
+        verse.copyInto(out, intro.size + pause.size)
         return out
+    }
+
+    /**
+     * What a room sounds like when nobody is playing.
+     *
+     * Hiss for the whole span, plus a reverberant tail of the last second of [after] decaying over
+     * about a second. The tail is why level has to be measured rather than assumed: for the first
+     * beat or so of the pause the recording genuinely is still sounding, and dropping that beat
+     * would be as wrong as keeping all ten.
+     */
+    private fun quietPause(samples: Int, after: FloatArray): FloatArray {
+        val out = FloatArray(samples)
+        val programLevel = rms(after)
+        val tailSamples = minOf(after.size, rate)
+        var state = 88_172_645_463_325_252L
+        for (i in out.indices) {
+            state = state xor (state shl 13)
+            state = state xor (state ushr 7)
+            state = state xor (state shl 17)
+            val noise = (state shr 40).toInt() / 8_388_608f
+            out[i] = (noise * hissLevel * programLevel).toFloat()
+            if (i < tailSamples) {
+                val decay = exp(-4.0 * i / rate)
+                out[i] += (after[after.size - tailSamples + i] * decay * 0.35).toFloat()
+            }
+        }
+        return out
+    }
+
+    private fun rms(samples: FloatArray): Double {
+        if (samples.isEmpty()) return 0.0
+        var sum = 0.0
+        for (sample in samples) sum += sample.toDouble() * sample
+        return sqrt(sum / samples.size)
+    }
+
+    @Test
+    fun `the pause in this fixture is quiet, not empty`() {
+        // Guards the fixture itself. If this ever passes trivially again, the tests below stop
+        // meaning anything — which is exactly how the first attempt at this shipped broken.
+        val pause = quietPause(rate * 3, after = SignalGenerator.clickTrack(bpm = 100f, bars = 2))
+        val floor = pause.drop(rate * 2).maxOf { abs(it) }
+        assertTrue("The pause must carry a noise floor, saw $floor", floor > 0f)
     }
 
     private fun beatsInsideGap(result: AnalysisResult, fromMs: Long, toMs: Long) =

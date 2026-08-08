@@ -13,6 +13,7 @@ import com.alekpeed.hearsay.core.audio.harmony.RecognizedChord
 import com.alekpeed.hearsay.core.audio.harmony.chordChangeStrength
 import com.alekpeed.hearsay.core.audio.rhythm.BeatTracker
 import com.alekpeed.hearsay.core.audio.rhythm.DownbeatEstimator
+import com.alekpeed.hearsay.core.audio.rhythm.LevelEnvelope
 import com.alekpeed.hearsay.core.audio.rhythm.MetricalHypothesisEvaluator
 import com.alekpeed.hearsay.core.audio.rhythm.OnsetEnvelope
 import com.alekpeed.hearsay.core.audio.rhythm.TempoCandidate
@@ -172,7 +173,15 @@ class AudioAnalyzer(
         onProgress(AnalysisProgress(AnalysisStageId.SEPARATING, 1f))
 
         onProgress(AnalysisProgress(AnalysisStageId.RHYTHM, 0f))
-        val rhythm = analyzeRhythm(separated.envelope, separated.chroma)
+        // Level, not flux: the beat tracker needs to know where the recording is quiet, and flux
+        // cannot tell a rest from a chord being held.
+        val levels = LevelEnvelope.of(
+            samples = mono.samples,
+            hopSize = settings.hopSize,
+            windowSize = settings.hopSize * LevelWindowHops,
+            frameCount = spectrogram.frameCount,
+        )
+        val rhythm = analyzeRhythm(separated.envelope, separated.chroma, levels)
         if (rhythm.beatFrames.size < 4) {
             warnings += "No steady pulse was found, so the bar grid is a guess."
         }
@@ -286,14 +295,18 @@ class AudioAnalyzer(
         return SeparatedFeatures(onsets.build(), chroma.build())
     }
 
-    private fun analyzeRhythm(envelope: OnsetEnvelope, chroma: Chromagram): RhythmAnalysis {
+    private fun analyzeRhythm(
+        envelope: OnsetEnvelope,
+        chroma: Chromagram,
+        levels: FloatArray?,
+    ): RhythmAnalysis {
         // The curve, not one number. A recording that drifts or opens in free time cannot be
         // followed by a constant period, and the grid sliding out of phase is what makes the
         // playing position move at the wrong speed against the music.
         val (global, candidates) = TempoEstimator.estimateWithCandidates(envelope)
         val selection = MetricalHypothesisEvaluator.select(envelope, chroma, global, candidates)
         val curve = TempoEstimator.curve(envelope, selection.tempo.bpm)
-        val tracked = BeatTracker.trackDetailed(envelope, curve)
+        val tracked = BeatTracker.trackDetailed(envelope, curve, levels)
         val beatFrames = tracked.map(TrackedBeat::frame)
         val tempo = TempoEstimate(
             curve.medianBpm.takeIf { it > 0f } ?: selection.tempo.bpm,
@@ -505,7 +518,7 @@ class AudioAnalyzer(
      * When a chord is released, its notes decay across the bar line and get counted in the first
      * beat of what follows. An F ringing into a G turns that beat into a G7 — same root, one extra
      * tone, one beat long, sitting right at a boundary. The fix is narrow on purpose: only a short
-     * region is absorbed, only into a longer neighbour, and only when they share a root. A genuine
+     * region is absorbed, only into a longer neighbor, and only when they share a root. A genuine
      * short chord with a different root is left exactly where it is, because passing chords being
      * smoothed away is the specific failure this product exists to avoid.
      */
@@ -605,6 +618,14 @@ class AudioAnalyzer(
         /** A beat inferred to bridge a gap the tracker could not fill from evidence. */
         const val FilledBeatConfidence = 0.35f
 
-        /** A region this short, sharing a root with its neighbour, is decay rather than harmony. */
+        /**
+         * How wide the level window is, in hops.
+         *
+         * Wide enough that one sample crossing zero is not read as silence, narrow enough that the
+         * edge of a pause is not smeared into the bar beside it. At the default hop that is 93 ms.
+         */
+        const val LevelWindowHops = 4
+
+        /** A region this short, sharing a root with its neighbor, is decay rather than harmony. */
     }
 }
