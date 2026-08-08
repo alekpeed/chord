@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the library database and preferences are backed up. That is deliberately an allowlist: the
+  app's private `files/sources/` directory holds copies of the user's audio, which is large and
+  recreatable from the originals, and nothing outside these two domains is included.
+-->
+<full-backup-content>
+    <include domain="database" path="." />
+    <include domain="sharedpref" path="." />
+</full-backup-content>

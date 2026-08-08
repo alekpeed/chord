@@ -1,0 +1,805 @@
+From fe0c04077b7b53b48c3529e614743e83ba357309 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 8 Aug 2026 15:37:04 +0000
+Subject: [PATCH] Use harmonic evidence to pick tactus; preserve cancellation
+ and enforce decode cap
+
+### Motivation
+
+- Prevent octave errors where onset peaks select a double-time tempo instead of the musical tactus by incorporating harmonic and bar-level evidence.
+- Preserve coroutine cancellation semantics when probing and decoding media so user-initiated cancels are not swallowed and misreported as failures.
+- Enforce the decoded-duration cap inside codec buffer consumption to avoid holding excess audio and unnecessary memory pressure.
+
+### Description
+
+- Add `MetricalHypothesisEvaluator` which scores tempo/meter/downbeat hypotheses using onset support, beat fit, accent contrast, harmonic-change alignment, and bar-level chroma repetition.
+- Integrate the evaluator into `AudioAnalyzer.analyzeRhythm` and pass the selected tempo to `TempoEstimator.curve`; carry the selected `beatsPerMeasure` into structure estimation via `analyzeStructure`.
+- Change `TempoEstimator.curve` signature to accept an `anchorBpm` so the windowed tempo path is anchored to the chosen metrical level.
+- Stop consuming a codec output buffer as soon as the sink reaches the configured `maxOutputSamples` by guarding `DecodeSink.append` with `!isFull`.
+- Rethrow `CancellationException` in `PcmDecoder.decode`, `MediaProbe.probe`, and `MediaProbe.checksum` so coroutine cancellation is not converted into ordinary failures.
+- Ensure `LibraryViewModel.onImport` clears the `importing` flag in a `finally` block so the UI cannot remain stuck importing after an error or cancellation.
+- Add unit tests: new harmonic-rhythm cases in `AudioAnalyzerTest` and a decode-cap test in `DecodeSinkTest`, and add an audit report document.
+
+### Testing
+
+- No Gradle/JVM unit tests were executed in this environment because the Android SDK and required uncached artifacts were unavailable; please run the JVM tests in CI with `./gradlew :core:audio:test` and related tasks for verification.
+- New unit tests added are `AudioAnalyzerTest` cases for harmonic-tactus selection and `DecodeSinkTest` for the decode cap and are expected to validate the new behavior once run in CI.
+- The repository audit script ran host Python checks (unrelated training tests) which passed in this environment, but Android/Gradle verification must be performed in CI.
+---
+ .../hearsay/core/audio/AudioAnalyzer.kt       |  23 +-
+ .../hearsay/core/audio/rhythm/BeatTracker.kt  |   4 +-
+ .../rhythm/MetricalHypothesisEvaluator.kt     | 197 +++++++++++++++
+ .../hearsay/core/audio/AudioAnalyzerTest.kt   |  38 +++
+ .../hearsay/core/audio/SignalGenerator.kt     |  24 +-
+ .../hearsay/core/media/ingest/MediaProbe.kt   |  13 +-
+ .../hearsay/core/media/ingest/PcmDecoder.kt   |   5 +-
+ .../core/media/ingest/DecodeSinkTest.kt       |  13 +
+ docs/audit-report-2026-08-07.md               | 237 ++++++++++++++++++
+ .../feature/library/LibraryViewModel.kt       |   7 +-
+ 10 files changed, 541 insertions(+), 20 deletions(-)
+ create mode 100644 core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/MetricalHypothesisEvaluator.kt
+ create mode 100644 docs/audit-report-2026-08-07.md
+
+diff --git a/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzer.kt b/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzer.kt
+index ef2bb4b..0eb5262 100644
+--- a/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzer.kt
++++ b/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzer.kt
+@@ -13,6 +13,7 @@ import com.alekpeed.hearsay.core.audio.harmony.RecognizedChord
+ import com.alekpeed.hearsay.core.audio.harmony.chordChangeStrength
+ import com.alekpeed.hearsay.core.audio.rhythm.BeatTracker
+ import com.alekpeed.hearsay.core.audio.rhythm.DownbeatEstimator
++import com.alekpeed.hearsay.core.audio.rhythm.MetricalHypothesisEvaluator
+ import com.alekpeed.hearsay.core.audio.rhythm.OnsetEnvelope
+ import com.alekpeed.hearsay.core.audio.rhythm.TempoCandidate
+ import com.alekpeed.hearsay.core.audio.rhythm.TempoCurve
+@@ -170,7 +171,7 @@ class AudioAnalyzer(
+         onProgress(AnalysisProgress(AnalysisStageId.SEPARATING, 1f))
+ 
+         onProgress(AnalysisProgress(AnalysisStageId.RHYTHM, 0f))
+-        val rhythm = analyzeRhythm(separated.envelope)
++        val rhythm = analyzeRhythm(separated.envelope, separated.chroma)
+         if (rhythm.beatFrames.size < 4) {
+             warnings += "No steady pulse was found, so the bar grid is a guess."
+         }
+@@ -190,7 +191,7 @@ class AudioAnalyzer(
+         onProgress(AnalysisProgress(AnalysisStageId.HARMONY, 1f))
+ 
+         onProgress(AnalysisProgress(AnalysisStageId.STRUCTURE, 0f))
+-        val structure = analyzeStructure(chroma, envelope, beatFrames, beatTimesMs)
++        val structure = analyzeStructure(chroma, envelope, beatFrames, beatTimesMs, rhythm.beatsPerMeasure)
+         val beatsPerMeasure = structure.beatsPerMeasure
+         val downbeatPhase = structure.downbeatPhase
+         val sections = structure.sections
+@@ -243,6 +244,7 @@ class AudioAnalyzer(
+         val beatTimesMs: List<Long>,
+         val curve: TempoCurve,
+         val tempoCandidates: List<TempoCandidate>,
++        val beatsPerMeasure: Int?,
+     )
+ 
+     private class SeparatedFeatures(val envelope: OnsetEnvelope, val chroma: Chromagram)
+@@ -280,21 +282,26 @@ class AudioAnalyzer(
+         return SeparatedFeatures(onsets.build(), chroma.build())
+     }
+ 
+-    private fun analyzeRhythm(envelope: OnsetEnvelope): RhythmAnalysis {
++    private fun analyzeRhythm(envelope: OnsetEnvelope, chroma: Chromagram): RhythmAnalysis {
+         // The curve, not one number. A recording that drifts or opens in free time cannot be
+         // followed by a constant period, and the grid sliding out of phase is what makes the
+         // playing position move at the wrong speed against the music.
+-        val curve = TempoEstimator.curve(envelope)
+         val (global, candidates) = TempoEstimator.estimateWithCandidates(envelope)
++        val selection = MetricalHypothesisEvaluator.select(envelope, chroma, global, candidates)
++        val curve = TempoEstimator.curve(envelope, selection.tempo.bpm)
+         val beatFrames = BeatTracker.track(envelope, curve)
+-        val tempo = TempoEstimate(curve.medianBpm.takeIf { it > 0f } ?: global.bpm, global.confidence)
++        val tempo = TempoEstimate(
++            curve.medianBpm.takeIf { it > 0f } ?: selection.tempo.bpm,
++            selection.tempo.confidence,
++        )
+         return RhythmAnalysis(
+             envelope = envelope,
+             tempo = tempo,
+             beatFrames = beatFrames,
+             beatTimesMs = beatFrames.map { envelope.timeMsOfFrame(it) },
+             curve = curve,
+-            tempoCandidates = candidates,
++            tempoCandidates = selection.candidates,
++            beatsPerMeasure = selection.winner?.beatsPerMeasure,
+         )
+     }
+ 
+@@ -366,9 +373,11 @@ class AudioAnalyzer(
+         envelope: OnsetEnvelope,
+         beatFrames: List<Int>,
+         beatTimesMs: List<Long>,
++        selectedBeatsPerMeasure: Int?,
+     ): StructureAnalysis {
+         val changeStrength = chordChangeStrength(chroma, beatTimesMs)
+-        val beatsPerMeasure = DownbeatEstimator.estimateBeatsPerMeasure(beatFrames, envelope, changeStrength)
++        val beatsPerMeasure = selectedBeatsPerMeasure
++            ?: DownbeatEstimator.estimateBeatsPerMeasure(beatFrames, envelope, changeStrength)
+         val downbeatPhase = DownbeatEstimator.estimate(beatFrames, envelope, changeStrength, beatsPerMeasure)
+         val sections = if (settings.detectSections && beatTimesMs.size >= 2) {
+             SectionDetector.detect(chroma, beatTimesMs, beatsPerMeasure)
+diff --git a/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/BeatTracker.kt b/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/BeatTracker.kt
+index 16be771..33ea9bc 100644
+--- a/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/BeatTracker.kt
++++ b/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/BeatTracker.kt
+@@ -250,7 +250,7 @@ object TempoEstimator {
+      * The preference for a human counting speed is applied to the whole path once, through the
+      * emission scores, rather than being re-litigated by every window independently.
+      */
+-    fun curve(envelope: OnsetEnvelope): TempoCurve {
++    fun curve(envelope: OnsetEnvelope, anchorBpm: Float = estimate(envelope).bpm): TempoCurve {
+         val minLag = (60.0 / MaxBpm / envelope.hopSeconds).roundToInt().coerceAtLeast(1)
+         val maxLag = (60.0 / MinBpm / envelope.hopSeconds).roundToInt().coerceAtMost(envelope.size - 1)
+         if (envelope.size < 4 || maxLag <= minLag) {
+@@ -264,7 +264,7 @@ object TempoEstimator {
+         // Windows are free to follow drift inside the band; they are not free to re-decide that the
+         // recording is at double or half time, because a window cannot see enough to judge that and
+         // the median of window-level mistakes is what the app reports as the tempo.
+-        val anchorLag = 60.0 / estimate(envelope).bpm / envelope.hopSeconds
++        val anchorLag = 60.0 / anchorBpm / envelope.hopSeconds
+         val lowLag = (anchorLag / DriftRange).roundToInt().coerceAtLeast(minLag)
+         val highLag = (anchorLag * DriftRange).roundToInt().coerceAtMost(maxLag)
+         val lags = if (highLag > lowLag) (lowLag..highLag).toList() else (minLag..maxLag).toList()
+diff --git a/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/MetricalHypothesisEvaluator.kt b/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/MetricalHypothesisEvaluator.kt
+new file mode 100644
+index 0000000..eaaba47
+--- /dev/null
++++ b/core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/rhythm/MetricalHypothesisEvaluator.kt
+@@ -0,0 +1,197 @@
++package com.alekpeed.hearsay.core.audio.rhythm
++
++import com.alekpeed.hearsay.core.audio.feature.Chromagram
++import com.alekpeed.hearsay.core.audio.harmony.chordChangeStrength
++import kotlin.math.abs
++import kotlin.math.max
++
++/** A complete musical interpretation of one tempo level, not merely an autocorrelation peak. */
++data class MetricalHypothesis(
++    val bpm: Float,
++    val beatsPerMeasure: Int,
++    val downbeatPhase: Int,
++    val beatFrames: List<Int>,
++    val onsetScore: Float,
++    val beatFitScore: Float,
++    val accentScore: Float,
++    val harmonyScore: Float,
++    val structureScore: Float,
++    val totalScore: Float,
++)
++
++data class MetricalSelection(
++    val tempo: TempoEstimate,
++    val candidates: List<TempoCandidate>,
++    val winner: MetricalHypothesis?,
++    val runnerUp: MetricalHypothesis?,
++)
++
++/**
++ * Ranks tempo, meter, and downbeat jointly.
++ *
++ * The onset envelope proposes levels; it does not get to declare which one is the tactus. Each
++ * serious peak and its neighboring octaves gets a tracked grid, and every plausible meter/phase is
++ * scored against beat fit, accent periodicity, harmonic rhythm, and bar-level chroma repetition.
++ */
++object MetricalHypothesisEvaluator {
++    private const val MinBpm = 45f
++    private const val MaxBpm = 220f
++    private const val MinimumBeats = 12
++    private const val MinimumChanges = 3
++    private const val ChangeThreshold = 0.05f
++    private const val CandidateLimit = 8
++    private val Meters = listOf(4, 3, 6)
++
++    fun select(
++        envelope: OnsetEnvelope,
++        chroma: Chromagram,
++        onsetWinner: TempoEstimate,
++        onsetCandidates: List<TempoCandidate>,
++    ): MetricalSelection {
++        val seeds = candidateSeeds(onsetWinner, onsetCandidates)
++        val hypotheses = seeds.flatMap { seed -> evaluateTempo(envelope, chroma, seed) }
++            .sortedByDescending(MetricalHypothesis::totalScore)
++        val winner = hypotheses.firstOrNull()
++            ?: return MetricalSelection(onsetWinner, onsetCandidates, null, null)
++        val runnerUp = hypotheses.firstOrNull { candidate ->
++            abs(candidate.bpm - winner.bpm) > winner.bpm * 0.03f
++        }
++        val margin = runnerUp?.let { ((winner.totalScore - it.totalScore) / max(winner.totalScore, 1e-6f)) }
++            ?.coerceIn(0f, 1f) ?: 1f
++        val hasMusicalEvidence = winner.harmonyScore > 0f || winner.accentScore > 0f || winner.structureScore > 0f
++        val confidence = if (hasMusicalEvidence) {
++            (onsetWinner.confidence * margin).coerceIn(0f, 1f)
++        } else {
++            onsetWinner.confidence
++        }
++        val rankedTempos = hypotheses.distinctByApproximateTempo()
++        val bestScore = max(rankedTempos.firstOrNull()?.totalScore ?: 0f, 1e-6f)
++        val candidates = rankedTempos.take(3).map { hypothesis ->
++            TempoCandidate(hypothesis.bpm, (hypothesis.totalScore / bestScore).coerceIn(0f, 1f))
++        }
++        return MetricalSelection(
++            tempo = TempoEstimate(winner.bpm, confidence),
++            candidates = candidates,
++            winner = winner,
++            runnerUp = runnerUp,
++        )
++    }
++
++    private fun evaluateTempo(
++        envelope: OnsetEnvelope,
++        chroma: Chromagram,
++        seed: CandidateSeed,
++    ): List<MetricalHypothesis> {
++        val beats = BeatTracker.track(envelope, seed.bpm)
++        if (beats.size < MinimumBeats) return emptyList()
++        val times = beats.map(envelope::timeMsOfFrame)
++        val changes = chordChangeStrength(chroma, times)
++        val hasHarmony = changes.count { it >= ChangeThreshold } >= MinimumChanges
++        val beatFit = beats.map { envelope.values.getOrElse(it) { 0f } }.average().toFloat().coerceIn(0f, 1f)
++
++        return Meters.flatMap { meter ->
++            (0 until meter).map { phase ->
++                val accent = barContrast(beats.indices.map { envelope.values.getOrElse(beats[it]) { 0f } }, meter, phase)
++                val harmony = if (hasHarmony) barContrast(changes.indices.map(changes::get), meter, phase) else 0f
++                val structure = barRepetition(chroma, times, meter, phase)
++                val total = 0.34f * seed.onsetScore +
++                    0.16f * beatFit +
++                    0.12f * accent +
++                    0.28f * harmony +
++                    0.10f * structure
++                MetricalHypothesis(
++                    bpm = seed.bpm,
++                    beatsPerMeasure = meter,
++                    downbeatPhase = phase,
++                    beatFrames = beats,
++                    onsetScore = seed.onsetScore,
++                    beatFitScore = beatFit,
++                    accentScore = accent,
++                    harmonyScore = harmony,
++                    structureScore = structure,
++                    totalScore = total,
++                )
++            }
++        }
++    }
++
++    private fun barContrast(values: List<Float>, meter: Int, phase: Int): Float {
++        var onBar = 0f
++        var offBar = 0f
++        var onCount = 0
++        var offCount = 0
++        for (index in values.indices) {
++            if ((index - phase).mod(meter) == 0) {
++                onBar += values[index]
++                onCount++
++            } else {
++                offBar += values[index]
++                offCount++
++            }
++        }
++        if (onCount == 0 || offCount == 0) return 0f
++        return (onBar / onCount - offBar / offCount).coerceIn(0f, 1f)
++    }
++
++    /** How consistently bars find a similar non-neighboring bar elsewhere in the recording. */
++    private fun barRepetition(chroma: Chromagram, times: List<Long>, meter: Int, phase: Int): Float {
++        val starts = times.indices.filter { (it - phase).mod(meter) == 0 && it + meter < times.size }
++        if (starts.size < 4) return 0f
++        val bars = starts.map { start -> chroma.averageBetween(times[start], times[start + meter]) }
++        var sum = 0f
++        var count = 0
++        for (i in bars.indices) {
++            var best = 0f
++            for (j in bars.indices) {
++                if (abs(i - j) <= 1) continue
++                best = max(best, cosine(bars[i], bars[j]))
++            }
++            sum += best
++            count++
++        }
++        return if (count > 0) (sum / count).coerceIn(0f, 1f) else 0f
++    }
++
++    private fun cosine(left: FloatArray, right: FloatArray): Float {
++        var dot = 0f
++        for (index in left.indices) dot += left[index] * right.getOrElse(index) { 0f }
++        return dot.coerceIn(0f, 1f)
++    }
++
++    private fun candidateSeeds(
++        winner: TempoEstimate,
++        candidates: List<TempoCandidate>,
++    ): List<CandidateSeed> {
++        val originals = buildList {
++            add(CandidateSeed(winner.bpm, 1f))
++            addAll(candidates.map { CandidateSeed(it.bpm, it.relativeScore) })
++        }
++        val expanded = originals.flatMap { seed ->
++            listOf(
++                seed,
++                CandidateSeed(seed.bpm / 2f, seed.onsetScore * 0.94f),
++                CandidateSeed(seed.bpm * 2f, seed.onsetScore * 0.94f),
++            )
++        }.filter { it.bpm in MinBpm..MaxBpm }
++            .sortedByDescending(CandidateSeed::onsetScore)
++
++        val distinct = mutableListOf<CandidateSeed>()
++        for (seed in expanded) {
++            if (distinct.none { abs(it.bpm - seed.bpm) <= seed.bpm * 0.03f }) distinct += seed
++            if (distinct.size == CandidateLimit) break
++        }
++        return distinct
++    }
++
++    private fun List<MetricalHypothesis>.distinctByApproximateTempo(): List<MetricalHypothesis> {
++        val distinct = mutableListOf<MetricalHypothesis>()
++        for (hypothesis in this) {
++            if (distinct.none { abs(it.bpm - hypothesis.bpm) <= hypothesis.bpm * 0.03f }) {
++                distinct += hypothesis
++            }
++        }
++        return distinct
++    }
++
++    private data class CandidateSeed(val bpm: Float, val onsetScore: Float)
++}
+diff --git a/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzerTest.kt b/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzerTest.kt
+index e769796..39bf065 100644
+--- a/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzerTest.kt
++++ b/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/AudioAnalyzerTest.kt
+@@ -37,6 +37,44 @@ class AudioAnalyzerTest {
+         )
+     }
+ 
++    @Test
++    fun `harmonic rhythm selects the tactus of an arpeggiated ballad`() {
++        val (samples, _) = SignalGenerator.progression(
++            symbols = listOf("C", "Am", "F", "G"),
++            bpm = 65f,
++            beatsPerChord = 4,
++            repeats = 2,
++            strikesPerBeat = 2,
++        )
++
++        val result = analyze(samples)
++
++        assertTrue(
++            "Expected the roughly 65 BPM tactus rather than its double, got ${result.tempoBpm}",
++            abs(result.tempoBpm - 65f) < 6f,
++        )
++        assertTrue(
++            "The fixture did not expose the competing double-time level: ${result.tempoCandidates}",
++            result.tempoCandidates.any { abs(it.bpm - 130f) < 10f },
++        )
++        assertEquals(4, result.beatsPerMeasure)
++        assertTrue("Expected an honest tempo confidence", result.tempoConfidence < 0.9f)
++    }
++
++    @Test
++    fun `harmonic rhythm does not halve a genuine tempo`() {
++        val (samples, _) = SignalGenerator.progression(
++            symbols = listOf("C", "Am", "F", "G"),
++            bpm = 132f,
++            beatsPerChord = 4,
++            repeats = 2,
++        )
++
++        val result = analyze(samples)
++
++        assertTrue("Expected about 132 BPM, got ${result.tempoBpm}", abs(result.tempoBpm - 132f) < 8f)
++    }
++
+     @Test
+     fun `places beats at a steady spacing`() {
+         val result = analyze(SignalGenerator.clickTrack(bpm = 120f, bars = 16))
+diff --git a/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/SignalGenerator.kt b/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/SignalGenerator.kt
+index 2728605..3038221 100644
+--- a/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/SignalGenerator.kt
++++ b/core/audio/src/test/kotlin/com/alekpeed/hearsay/core/audio/SignalGenerator.kt
+@@ -32,6 +32,7 @@ object SignalGenerator {
+         repeats: Int = 2,
+         withClick: Boolean = true,
+         rootOctave: Int = 3,
++        strikesPerBeat: Int = 1,
+     ): Pair<FloatArray, List<Chord>> {
+         val beatSeconds = 60.0 / bpm
+         val chordSeconds = beatSeconds * beatsPerChord
+@@ -46,13 +47,26 @@ object SignalGenerator {
+             val midiNotes = voiceChord(chord, rootOctave)
+ 
+             // Restrike on every beat so there is an onset to find, with the downbeat loudest.
+-            for (beat in 0 until beatsPerChord) {
+-                val strikeStart = chordStart + (beat * beatSeconds * SampleRate).toInt()
+-                val amplitude = if (beat == 0) 0.9f else 0.55f
++            for (strike in 0 until beatsPerChord * strikesPerBeat) {
++                val strikeStart = chordStart + (strike * beatSeconds / strikesPerBeat * SampleRate).toInt()
++                val amplitude = when {
++                    strike == 0 -> 0.9f
++                    strike % strikesPerBeat == 0 -> 0.55f
++                    else -> 0.45f
++                }
+                 for (midi in midiNotes) {
+-                    addTone(out, strikeStart, midiToHz(midi), amplitude / midiNotes.size, beatSeconds * 1.6)
++                    addTone(
++                        out,
++                        strikeStart,
++                        midiToHz(midi),
++                        amplitude / midiNotes.size,
++                        beatSeconds * 1.6 / strikesPerBeat,
++                    )
++                }
++                if (withClick) {
++                    val click = if (strike == 0) 0.5f else if (strike % strikesPerBeat == 0) 0.28f else 0.22f
++                    addClick(out, strikeStart, click)
+                 }
+-                if (withClick) addClick(out, strikeStart, if (beat == 0) 0.5f else 0.28f)
+             }
+         }
+ 
+diff --git a/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/MediaProbe.kt b/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/MediaProbe.kt
+index e561c6a..7d1e027 100644
+--- a/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/MediaProbe.kt
++++ b/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/MediaProbe.kt
+@@ -9,6 +9,7 @@ import android.provider.OpenableColumns
+ import com.alekpeed.hearsay.core.common.dispatchers.Dispatcher
+ import com.alekpeed.hearsay.core.common.dispatchers.HearsayDispatcher
+ import dagger.hilt.android.qualifiers.ApplicationContext
++import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.CoroutineDispatcher
+ import kotlinx.coroutines.withContext
+ import java.security.MessageDigest
+@@ -61,6 +62,8 @@ class MediaProbe @Inject constructor(
+                 fileSizeBytes = fileSize(uri),
+                 hasAudioTrack = audio != null,
+             )
++        } catch (cancellation: CancellationException) {
++            throw cancellation
+         } catch (error: Exception) {
+             null
+         } finally {
+@@ -75,7 +78,7 @@ class MediaProbe @Inject constructor(
+      * separate real songs, and reading a whole video file to import its audio is not worth the wait.
+      */
+     suspend fun checksum(uri: Uri): String? = withContext(ioDispatcher) {
+-        runCatching {
++        try {
+             val digest = MessageDigest.getInstance("SHA-256")
+             context.contentResolver.openInputStream(uri)?.use { stream ->
+                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+@@ -86,10 +89,14 @@ class MediaProbe @Inject constructor(
+                     digest.update(buffer, 0, read)
+                     total += read
+                 }
+-            } ?: return@runCatching null
++            } ?: return@withContext null
+             fileSize(uri)?.let { digest.update(it.toString().toByteArray()) }
+             digest.digest().joinToString("") { "%02x".format(it) }
+-        }.getOrNull()
++        } catch (cancellation: CancellationException) {
++            throw cancellation
++        } catch (error: Exception) {
++            null
++        }
+     }
+ 
+     private fun displayName(uri: Uri): String? = runCatching {
+diff --git a/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/PcmDecoder.kt b/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/PcmDecoder.kt
+index bd7e435..70dfe43 100644
+--- a/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/PcmDecoder.kt
++++ b/core/media/src/main/kotlin/com/alekpeed/hearsay/core/media/ingest/PcmDecoder.kt
+@@ -8,6 +8,7 @@ import android.net.Uri
+ import com.alekpeed.hearsay.core.common.dispatchers.Dispatcher
+ import com.alekpeed.hearsay.core.common.dispatchers.HearsayDispatcher
+ import dagger.hilt.android.qualifiers.ApplicationContext
++import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.CoroutineDispatcher
+ import kotlinx.coroutines.ensureActive
+ import kotlinx.coroutines.withContext
+@@ -107,6 +108,8 @@ class PcmDecoder @Inject constructor(
+ 
+             onProgress(1f)
+             Result.success(sink.toDecodedAudio())
++        } catch (cancellation: CancellationException) {
++            throw cancellation
+         } catch (error: Exception) {
+             Result.failure(DecodeException(DecodeFailure.Unreadable(error.message ?: "Decoding failed")))
+         } finally {
+@@ -328,7 +331,7 @@ internal class DecodeSink(private val targetSampleRate: Int, private val maxOutp
+ 
+         // A codec buffer can in principle end mid-frame. Carrying the remainder keeps the channel
+         // alignment; dropping it would silently rotate left and right for the rest of the file.
+-        while (shorts.hasRemaining()) {
++        while (shorts.hasRemaining() && !isFull) {
+             carry[carried++] = shorts.get() / 32_768f
+             if (carried == channels) {
+                 carry.copyInto(frame)
+diff --git a/core/media/src/test/kotlin/com/alekpeed/hearsay/core/media/ingest/DecodeSinkTest.kt b/core/media/src/test/kotlin/com/alekpeed/hearsay/core/media/ingest/DecodeSinkTest.kt
+index 2d1b019..68e5335 100644
+--- a/core/media/src/test/kotlin/com/alekpeed/hearsay/core/media/ingest/DecodeSinkTest.kt
++++ b/core/media/src/test/kotlin/com/alekpeed/hearsay/core/media/ingest/DecodeSinkTest.kt
+@@ -71,4 +71,17 @@ class DecodeSinkTest {
+ 
+         assertEquals(sizeBeforeReconfigure, sink.size)
+     }
++
++    @Test
++    fun `the duration cap is enforced inside a codec buffer`() {
++        val sink = DecodeSink(targetSampleRate = 22_050, maxOutputSamples = 3)
++        sink.configure(channels = 1, sourceRate = 22_050, expectedOutputSamples = 3)
++        val buffer = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN)
++        repeat(10) { buffer.putShort(1000) }
++        buffer.rewind()
++
++        sink.append(buffer, bufferInfoFor(buffer.capacity()))
++
++        assertEquals(3, sink.toDecodedAudio().samples.size)
++    }
+ }
+diff --git a/docs/audit-report-2026-08-07.md b/docs/audit-report-2026-08-07.md
+new file mode 100644
+index 0000000..b05bb72
+--- /dev/null
++++ b/docs/audit-report-2026-08-07.md
+@@ -0,0 +1,237 @@
++# Code and product audit — August 7, 2026
++
++## Scope and evidence
++
++This audit covered every production module, the desktop analyzer, the training utilities, database
++schemas and migrations, build configuration, CI, and the existing automated tests. It combined
++static review with the checks listed at the end of this report. The Android SDK and uncached JVM
++dependencies were unavailable in the audit environment, so Android/Gradle verification is clearly
++separated from checks that actually ran. No physical device or copyrighted source recording was
++available.
++
++## Executive summary
++
++The architecture is sound for an early native application: music and DSP remain Android-free,
++machine results and user corrections are separate revisions, analysis work is application-scoped,
++and decoding reduces audio to the analysis format before retaining it. The most important risks are
++not basic layering problems; they are signal-level ambiguity, Android codec coverage, and missing
++product escape hatches for uncertain analysis.
++
++This audit fixed four defects:
++
++1. Tempo octave selection ignored harmony even though harmony contains the evidence that separates
++   a slow tactus from continuously articulated subdivisions.
++2. Media probing and decoding converted coroutine cancellation into ordinary failures.
++3. A single large codec output buffer could overrun the configured decoded-duration cap.
++4. A canceled or failed library import could leave the screen permanently showing an import in
++   progress.
++
++The tempo change is verified only against synthesized fixtures and code-level reasoning. It has not
++been run against *All in Love Is Fair*, *Golden Lady*, or any other real recording, and this report
++does not claim that the reported device failure is solved until that test is performed.
++
++## Changes made
++
++### 1. Joint onset-and-harmony tactus selection
++
++**Changed:** `AudioAnalyzer.analyzeRhythm`, a new `MetricalHypothesisEvaluator`, and
++`TempoEstimator.curve`.
++
++**User failure:** the onset estimator could choose approximately 130 BPM for a song whose musical
++tactus is approximately 65 BPM. Continuous arpeggiation puts a real onset at every subdivision, so
++the existing alternate-beat energy check sees no missing pulse and confidently retains double time.
++
++**Implementation:** rhythm now expands the serious onset peaks into a bounded lattice containing
++their half- and double-time levels. Each tempo gets its own tracked grid, and every 3-, 4-, and 6-beat
++meter/downbeat-phase combination becomes an explicit hypothesis. Hypotheses are ranked by normalized
++onset support, beat fit, accent contrast, harmonic-change alignment, and non-neighboring bar-level
++chroma repetition. The winning meter is carried into structure analysis, while its tempo anchors the
++local curve so later windows may follow drift without returning to a rejected octave.
++
++The winning and runner-up tempo levels remain available, and confidence is reduced according to the
++joint-score margin when musical evidence participated. When no accent, harmony, or structural
++evidence is usable, onset confidence is retained rather than fabricating certainty from silence.
++
++**Verification:** new full-pipeline synthesized tests cover a 65 BPM progression articulated twice
++per beat and a genuine 132 BPM progression. Existing tests cover sparse 60–80 BPM ballads, genuine
++100/132 BPM material, a metrically ambiguous 168/84 pulse, tempo drift, and known-tempo analyzer
++fixtures. Gradle could not execute in this environment because the Android SDK was absent and the
++dependency repositories returned HTTP 403 for uncached artifacts. These tests therefore require CI
++confirmation.
++
++**Considered and rejected:**
++
++- Moving the preferred-tempo prior again merely changes which octave ties lose.
++- Raising the alternate-onset threshold would break genuine fast or strongly accented material.
++- Automatically halving every result in the 120–140 BPM band would repeat the regression that
++  turned a real 168 BPM signal into approximately 83 BPM.
++- Running full chord recognition for every tempo candidate would be expensive and circular. Chroma
++  change is sufficient for this decision and is already available before chord labels are chosen.
++- Replacing the pipeline with an opaque learned tempo model was rejected because there is no
++  benchmark, packaged model, device memory measurement, or fallback satisfying the model registry.
++
++**Real-audio limitation:** before this change the physical recording reportedly returned 129 BPM,
++approximately twice a tapped 64.5 BPM. No source audio was available here, so there is no honest
++after number for that recording.
++
++### 2. Cancellation remains cancellation in media I/O
++
++**Changed:** `PcmDecoder.decode`, `MediaProbe.probe`, and `MediaProbe.checksum`.
++
++**User failure:** canceling a long decode, metadata read, or checksum operation could be caught as a
++generic `Exception` and returned as an unreadable-media failure. Upstream code could then mark a
++canceled analysis as failed, show a false error, or continue work the user had stopped.
++
++**Implementation:** each boundary now rethrows `CancellationException` before translating genuine
++I/O exceptions into domain failures.
++
++**Verification:** this follows the coroutine cancellation contract and matches the explicit
++cancellation handling already present in `LocalAnalysisBackend` and `AnalysisEngine`. A platform
++decoder cancellation test is still missing because `MediaCodec` cannot run in the host JVM suite.
++
++**Considered and rejected:** returning a dedicated decode-domain cancellation failure was rejected.
++Cancellation is structured control flow; converting it to a `Result` value prevents parent scopes
++from stopping their children correctly.
++
++### 3. Enforce the decode cap while consuming a buffer
++
++**Changed:** `DecodeSink.append` and `DecodeSinkTest`.
++
++**User failure:** the outer decoder checked `isFull` only after appending an entire codec buffer. A
++large output buffer could therefore retain audio beyond the fifteen-minute cap. Besides making the
++documented limit inaccurate, this creates avoidable memory pressure on the devices the cap protects.
++
++**Implementation:** sample consumption now stops as soon as the mono output reaches the configured
++limit, even when unread samples remain in the current codec buffer.
++
++**Verification:** a new sink test supplies ten samples with a three-sample limit and requires exactly
++three output samples. It requires Gradle/CI confirmation in the current environment.
++
++**Considered and rejected:** trimming only in `toDecodedAudio` would still allocate and retain the
++excess samples, defeating the memory-safety purpose of the cap.
++
++### 4. Always clear the library import indicator
++
++**Changed:** `LibraryViewModel.onImport`.
++
++**User failure:** if import threw or its coroutine was canceled, the assignment clearing
++`isImporting` was skipped. If the ViewModel remained alive, the library could stay stuck in an
++importing state indefinitely.
++
++**Implementation:** cleanup now occurs in `finally`; successful and domain-failure messages keep the
++existing behavior.
++
++**Verification:** structured-control-flow reasoning. A focused ViewModel regression test is
++recommended once the Gradle suite is executable.
++
++**Considered and rejected:** catching every exception and displaying its message would risk exposing
++implementation details and would incorrectly consume cancellation. Cleanup without changing the
++existing domain-error policy is the safe fix.
++
++## Bugs and risks found but not fixed
++
++### High priority
++
++1. **The tempo correction is not verified on real recordings.** Synthetic signals establish a
++   regression boundary, not production accuracy. The three reported tracks must be rerun on the
++   physical tablet, with the build SHA and candidate/debug summary recorded.
++2. **`PcmDecoder` still lacks an on-device integration corpus.** `DecodeSink` has host tests, but the
++   actual extractor/codec loop is device-only. Maintain a small licensed corpus covering AAC-LC,
++   HE-AAC/SBR, MP3, FLAC, mono/stereo, unusual channel counts, output-format changes, truncated files,
++   and duration caps, then run it as instrumentation tests on representative hardware.
++3. **Tempo confidence is not statistically calibrated.** The new margin prevents a close harmonic
++   choice from retaining certainty, but no dataset establishes that a displayed value such as 0.8
++   corresponds to an 80% correctness rate. Confidence should be reliability-calibrated on annotated
++   real audio and the UI should describe uncertainty in user language.
++4. **A residual approximately 45 ms beat offset remains unexplained.** Do not hide it with another
++   global correction until decoder timestamps, spectral-window center, onset smoothing, peak
++   localization, and playback output latency have been measured independently.
++
++### Medium priority
++
++1. **Concurrent calls to `AnalysisEngine.start` are not serialized.** Two callers can both observe no
++   running map entry and create duplicate jobs before either stores its coroutine. The UI currently
++   provides one ordinary entry path, so this was not changed without a reproducible trigger. A
++   per-project mutex or atomic ownership record should protect creation.
++2. **Source deduplication is probabilistic for files over 32 MiB.** The checksum hashes only the
++   leading bytes plus size. Two distinct exports with identical headers, size, and leading audio can
++   collide. This is a deliberate responsiveness tradeoff, but the field should be understood as a
++   fingerprint rather than a cryptographic whole-file checksum.
++3. **Revision activation trusts its caller.** `RoomChartRepository.setActiveRevision` does not verify
++   that the revision belongs to the supplied project. Current callers are internal, but validating
++   ownership in the transaction would prevent accidental cross-project pointers as features expand.
++4. **Library search is linear and locale-implicit.** This is fine for a small personal library, but
++   repeated `lowercase()` scans and full list collection should move to normalized indexed database
++   search if libraries become large.
++5. **Playback-controller shutdown can race its asynchronous connection.** If `release` occurs before
++   `MediaController.Builder.buildAsync` completes, the completion listener can still install the
++   controller. The application singleton is normally process-lived, so no observed user failure
++   justified a speculative lifecycle rewrite.
++6. **Long analyses are checkpointed in status only, not resumable computation.** Process death
++   preserves an honest job history but restarts decoding and DSP. The existing stage records create
++   the right foundation; resumable artifacts need explicit versioning and storage budgets.
++
++### Low priority
++
++1. `SongChart.indexOfChordAtOrAfter` uses a linear search after its binary containing lookup. It is
++   unlikely to matter for ordinary chart sizes, but the next-start lookup can also be binary.
++2. Section lookup is linear. This is harmless with a handful of sections and should not be optimized
++   until profiles show a need.
++3. Some UI state uses `MutableStateFlow` for one-shot messages. The explicit acknowledgment prevents
++   most duplicate display, but a buffered event channel would make delivery semantics clearer.
++4. The handoff document contains the typo “centerd”; it should read “centered.” It was left untouched
++   because this report focuses on product code and the typo has no runtime effect.
++
++## Feature and product recommendations, ranked
++
++1. **Ship half-time, double-time, and tap-tempo correction.** No estimator can infer every listener's
++   intended tactus from audio alone. Treat the action as a non-destructive metrical reinterpretation:
++   preserve the machine revision, choose retained-beat parity when halving, interpolate when doubling,
++   and recompute meter, downbeats, chord spans, sections, and tempo segments.
++2. **Show tempo uncertainty and alternatives.** The analysis already retains candidates. Present
++   “about 65 BPM” and a one-tap “129 BPM” alternative when the decision is close, just as chord
++   alternatives are preserved rather than hidden.
++3. **Create a real-audio evaluation harness.** Record strict tempo accuracy, octave-tolerant accuracy,
++   beat F-measure with continuity, downbeat accuracy, chord overlap score, runtime, and peak memory by
++   device/profile. Keep copyrighted evaluation audio outside the repository with reproducible local
++   manifests.
++4. **Add chart import UI.** `ChartImporter` exists and is tested, but users cannot invoke it. Include a
++   conflict preview and always create an imported revision rather than replacing machine/user history.
++5. **Make analysis resumable after process death.** Cache versioned reduced features—not the huge full
++   spectrogram—at deliberate checkpoints, validate available storage, and discard incompatible caches
++   after algorithm changes.
++6. **Add a waveform cache and precise boundary editor.** The processing pipeline currently reports
++   waveform generation as skipped. A downsampled peak cache would make chord-boundary correction and
++   beat-offset diagnosis materially easier.
++7. **Complete settings with user-facing analysis defaults and accessibility controls.** Preserve the
++   current profile/detail semantics and explain their accuracy, memory, and notation tradeoffs.
++8. **Package the desktop analyzer in releases.** It is valuable for reproducible debugging and can
++   produce importable output, but users and testers currently must build it themselves.
++9. **Integrate a trained model only after registry requirements are met.** The training pipeline has
++   no on-device inference path. Do not ship one without quality comparisons, memory/runtime benchmarks,
++   a fallback, and a visible quality classification.
++
++## Verification record
++
++### Passed
++
++- `python3 -m unittest discover training/tests -v` — 36 tests passed.
++- `python3 -m compileall -q training` — all training Python sources compiled.
++- `git diff --check` — no whitespace errors.
++
++### Blocked by the environment
++
++- `./gradlew test detekt` — Android SDK location was not available.
++- `./gradlew :core:audio:test :core:audio:detekt` — uncached Kotlin/coroutines/serialization artifacts
++  could not be downloaded because both configured repositories returned HTTP 403.
++- `./gradlew --offline --no-configuration-cache :core:audio:test :core:audio:detekt` — confirmed that
++  the required Kotlin, coroutine, serialization, and Detekt artifacts were not present in the cache.
++- `./gradlew :app:assembleRelease` — not runnable without the Android SDK and resolved dependencies.
++
++### Required follow-up outside this environment
++
++1. Run the complete Gradle test and Detekt suite in CI.
++2. Build and install the release APK on the physical tablet.
++3. Reanalyze the three reported *Innervisions* recordings and record selected tempo, confidence, and
++   alternatives before making any real-audio success claim.
++4. Run the on-device codec corpus and measure the residual beat offset against decoded PCM timestamps.
+diff --git a/feature/library/src/main/kotlin/com/alekpeed/hearsay/feature/library/LibraryViewModel.kt b/feature/library/src/main/kotlin/com/alekpeed/hearsay/feature/library/LibraryViewModel.kt
+index 50219d3..616e950 100644
+--- a/feature/library/src/main/kotlin/com/alekpeed/hearsay/feature/library/LibraryViewModel.kt
++++ b/feature/library/src/main/kotlin/com/alekpeed/hearsay/feature/library/LibraryViewModel.kt
+@@ -71,8 +71,11 @@ class LibraryViewModel @Inject constructor(
+     fun onImport(uri: String, storageMode: StorageMode, profile: AnalysisProfile = AnalysisProfile.BALANCED) {
+         viewModelScope.launch {
+             importing.value = true
+-            val result = importRepository.import(uri, storageMode, profile)
+-            importing.value = false
++            val result = try {
++                importRepository.import(uri, storageMode, profile)
++            } finally {
++                importing.value = false
++            }
+             _messages.value = when (result) {
+                 is ImportResult.Success ->
+                     LibraryMessage.Imported(projectRepository.getProject(result.projectId)?.project?.title.orEmpty())
+-- 
+2.43.0
+

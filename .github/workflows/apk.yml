@@ -1,0 +1,131 @@
+# Builds the installable app and publishes it at a URL that never changes:
+#
+#     https://github.com/alekpeed/chord/releases/latest/download/hearsay.apk
+#
+# The release is replaced on every build, so that link is always the newest APK. A second copy is
+# attached under a versioned name so an older download stays identifiable once it is on a device.
+name: APK
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'training/**'
+  workflow_dispatch:
+
+# Needed to create the release. Nothing else in this workflow writes to the repository.
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-37.1" "build-tools;37.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore the signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.HEARSAY_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/hearsay.jks"
+            echo "HEARSAY_KEYSTORE=$RUNNER_TEMP/hearsay.jks" >> "$GITHUB_ENV"
+            echo "Signing with the repository release key."
+          else
+            # Worth a warning rather than silence: the debug key is regenerated on every runner, so
+            # each build gets a different signature and Android refuses to install one over another.
+            echo "::warning::No HEARSAY_KEYSTORE_BASE64 secret set — signing with a throwaway debug key. Installing a new build will require uninstalling the previous one. See README, 'Signing'."
+          fi
+
+      - name: Assemble release
+        env:
+          HEARSAY_KEYSTORE_PASSWORD: ${{ secrets.HEARSAY_KEYSTORE_PASSWORD }}
+          HEARSAY_KEY_ALIAS: ${{ secrets.HEARSAY_KEY_ALIAS }}
+          HEARSAY_KEY_PASSWORD: ${{ secrets.HEARSAY_KEY_PASSWORD }}
+          # Stamped into the APK so the app can say which commit it came from, and so each build
+          # outranks the last as far as Android's update check is concerned.
+          HEARSAY_GIT_SHA: ${{ github.sha }}
+          HEARSAY_VERSION_CODE: ${{ github.run_number }}
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Collect the APK
+        id: collect
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
+          short=$(git rev-parse --short HEAD)
+          built=app/build/outputs/apk/release/app-release.apk
+
+          mkdir -p dist
+          # Two names for one file: a stable one for the permanent link, a versioned one so a copy
+          # already sitting on a device can still be identified.
+          cp "$built" "dist/hearsay.apk"
+          cp "$built" "dist/hearsay-$version-$short.apk"
+
+          {
+            echo "version=$version"
+            echo "short=$short"
+            echo "size=$(du -h "$built" | cut -f1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hearsay-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Publish the download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.collect.outputs.version }}
+          SHORT: ${{ steps.collect.outputs.short }}
+          SIZE: ${{ steps.collect.outputs.size }}
+        run: |
+          set -euo pipefail
+          tag=latest-apk
+
+          cat > notes.md <<NOTES
+          **Download:** [hearsay.apk]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk) — that link always points at the newest build.
+
+          Built from \`$GITHUB_REF_NAME\` at [\`$SHORT\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA). Version $VERSION, $SIZE. Requires Android 12 or newer.
+
+          Android will ask you to allow installing from your browser or file manager the first time; the app is not on the Play Store.
+
+          This build has not been run on a physical device by its author, and chord accuracy on real recordings is unmeasured — see the README.
+          NOTES
+
+          # Replaced rather than added to, so "latest" is a single moving target instead of a list.
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          # Deliberately not --prerelease: /releases/latest/ skips prereleases, so marking it one
+          # leaves the permanent download link resolving to nothing.
+          gh release create "$tag" dist/*.apk \
+            --title "Hearsay $VERSION ($SHORT)" \
+            --notes-file notes.md \
+            --target "$GITHUB_SHA" \
+            --latest
+
+          echo "### Download" >> "$GITHUB_STEP_SUMMARY"
+          echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk" >> "$GITHUB_STEP_SUMMARY"

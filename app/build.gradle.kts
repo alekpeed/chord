@@ -1,0 +1,160 @@
+import java.util.Properties
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.hilt)
+    alias(libs.plugins.ksp)
+}
+
+// Release signing details come from the environment (CI secrets) or from local.properties, never
+// from a file in the repository. When they are absent the release build falls back to the debug
+// key so `assembleRelease` still produces something installable — but that key is generated per
+// machine, so an APK signed with it cannot be installed over one from a different machine.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
+fun signingSecret(name: String): String? =
+    System.getenv(name)?.takeIf(String::isNotBlank) ?: localProperties.getProperty(name)
+
+/**
+ * The commit this build came from, so a screenshot can be tied to a build.
+ *
+ * Without it, a report of what the app did is not attributable to any particular version, and a
+ * fix cannot be told apart from a fix that was never installed.
+ */
+val gitSha: String = System.getenv("HEARSAY_GIT_SHA")?.takeIf(String::isNotBlank)
+    ?: providers.exec {
+        commandLine("git", "rev-parse", "--short", "HEAD")
+    }.standardOutput.asText.map(String::trim).orNull?.takeIf(String::isNotEmpty)
+    ?: "unknown"
+
+/**
+ * Increments per CI build so Android accepts each one as an update.
+ *
+ * Android refuses to install an APK whose versionCode is lower than the installed one. Every build
+ * shipping as versionCode 1 meant they were all indistinguishable to the platform.
+ */
+val buildNumber: Int = System.getenv("HEARSAY_VERSION_CODE")?.toIntOrNull() ?: 1
+
+android {
+    namespace = "com.alekpeed.hearsay"
+    compileSdk = libs.versions.compileSdk.get().toInt()
+
+    defaultConfig {
+        applicationId = "com.alekpeed.hearsay"
+        minSdk = libs.versions.minSdk.get().toInt()
+        targetSdk = libs.versions.targetSdk.get().toInt()
+        versionCode = buildNumber
+        versionName = "0.1.0"
+
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        // A fixed debug key, committed to the repository.
+        //
+        // Android identifies an app by its signature, so a build signed with a different key than
+        // the one already installed is a different app and will not update over it — reported only
+        // as a vague "app not installed". Gradle's default debug keystore is generated per machine,
+        // and CI generates a fresh one on every run, so every single build had a new signature and
+        // every install needed an uninstall first.
+        //
+        // Committing this one is the deliberate trade. It is a debug key: it is public, so anyone
+        // with this repository can build an APK that Android will happily install over yours. That
+        // is acceptable for an app distributed to one person from a GitHub release and unacceptable
+        // for anything on a store, which is what the release config below is for — set the four
+        // HEARSAY_* secrets and that key takes over, with this becoming irrelevant.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+
+        val keystore = signingSecret("HEARSAY_KEYSTORE")?.let(::file)
+        if (keystore != null && keystore.exists()) {
+            create("release") {
+                storeFile = keystore
+                storePassword = signingSecret("HEARSAY_KEYSTORE_PASSWORD")
+                keyAlias = signingSecret("HEARSAY_KEY_ALIAS") ?: "hearsay"
+                keyPassword = signingSecret("HEARSAY_KEY_PASSWORD")
+                    ?: signingSecret("HEARSAY_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+}
+
+dependencies {
+    implementation(projects.core.model)
+    implementation(projects.core.common)
+    implementation(projects.core.data)
+    implementation(projects.core.database)
+    implementation(projects.core.media)
+    implementation(projects.feature.library)
+    implementation(projects.feature.performance)
+    implementation(projects.feature.eartraining)
+    implementation(projects.feature.processing)
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.hilt.navigation.compose)
+
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.kotlinx.coroutines.test)
+
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.espresso.core)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
