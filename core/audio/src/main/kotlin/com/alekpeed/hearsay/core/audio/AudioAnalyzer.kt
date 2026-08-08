@@ -203,7 +203,7 @@ class AudioAnalyzer(
         onProgress(AnalysisProgress(AnalysisStageId.STRUCTURE, 0f))
         val structure = analyzeStructure(chroma, envelope, beatFrames, beatTimesMs, rhythm.beatsPerMeasure)
         val beatsPerMeasure = structure.beatsPerMeasure
-        val downbeatPhase = structure.downbeatPhase
+        val metricalSpans = structure.metricalSpans
         val sections = structure.sections
         onProgress(AnalysisProgress(AnalysisStageId.STRUCTURE, 1f))
 
@@ -223,7 +223,7 @@ class AudioAnalyzer(
             chords = chords,
             beatTimesMs = beatTimesMs,
             beatsPerMeasure = beatsPerMeasure,
-            downbeatPhase = downbeatPhase,
+            metricalSpans = metricalSpans,
             sections = sections,
             tempo = tempo.bpm,
             beatDetected = rhythm.beatDetected,
@@ -382,9 +382,12 @@ class AudioAnalyzer(
 
     private class StructureAnalysis(
         val beatsPerMeasure: Int,
-        val downbeatPhase: Int,
+        val metricalSpans: List<DownbeatEstimator.MetricalSpan>,
         val sections: List<com.alekpeed.hearsay.core.audio.structure.DetectedSection>,
-    )
+    ) {
+        /** The opening phase, which is what the result reports as "the" downbeat. */
+        val downbeatPhase: Int get() = metricalSpans.firstOrNull()?.phase ?: 0
+    }
 
     /** Where the bar lines fall, and where the music stops resembling itself. */
     private fun analyzeStructure(
@@ -397,13 +400,14 @@ class AudioAnalyzer(
         val changeStrength = chordChangeStrength(chroma, beatTimesMs)
         val beatsPerMeasure = selectedBeatsPerMeasure
             ?: DownbeatEstimator.estimateBeatsPerMeasure(beatFrames, envelope, changeStrength)
-        val downbeatPhase = DownbeatEstimator.estimate(beatFrames, envelope, changeStrength, beatsPerMeasure)
+        val metricalSpans =
+            DownbeatEstimator.spans(beatFrames, beatTimesMs, envelope, changeStrength, beatsPerMeasure)
         val sections = if (settings.detectSections && beatTimesMs.size >= 2) {
             SectionDetector.detect(chroma, beatTimesMs, beatsPerMeasure)
         } else {
             emptyList()
         }
-        return StructureAnalysis(beatsPerMeasure, downbeatPhase, sections)
+        return StructureAnalysis(beatsPerMeasure, metricalSpans, sections)
     }
 
     /**
@@ -418,7 +422,7 @@ class AudioAnalyzer(
         chords: List<RecognizedChord>,
         beatTimesMs: List<Long>,
         beatsPerMeasure: Int,
-        downbeatPhase: Int,
+        metricalSpans: List<DownbeatEstimator.MetricalSpan>,
         sections: List<com.alekpeed.hearsay.core.audio.structure.DetectedSection>,
         tempo: Float,
         beatDetected: List<Boolean>,
@@ -431,18 +435,36 @@ class AudioAnalyzer(
         // for being "before bar one", which left everything that happens before the first downbeat
         // with no beat under it at all: no bar number on the chart, and nothing for the playing
         // position to follow. Music that starts before its first downbeat is normal, not an error.
-        val beats = beatTimesMs.mapIndexed { index, timeMs ->
-            val position = (index - downbeatPhase).mod(beatsPerMeasure)
-            BeatEvent(
-                timeMs = timeMs,
-                beatInMeasure = position + 1,
-                measureNumber = Math.floorDiv(index - downbeatPhase, beatsPerMeasure) + 1,
-                // A beat the tracker filled in was inferred from the beats either side of it, not
-                // heard. Reporting it at the same confidence as a detected beat would present an
-                // inference as an observation.
-                confidence = if (beatDetected.getOrElse(index) { true }) DetectedBeatConfidence else FilledBeatConfidence,
-                source = AnalysisSource.MACHINE,
-            )
+        //
+        // The bar count runs across the whole chart, but each stretch of continuous music sets its
+        // own bar line. A rest lasting a fraction of a bar would otherwise rotate everything on one
+        // side of it, and it is the shorter side that loses — usually the intro, whose opening
+        // chord then reads as a pickup belonging to no bar at all.
+        val beats = ArrayList<BeatEvent>(beatTimesMs.size)
+        var nextBar = 1
+        for ((spanIndex, span) in metricalSpans.withIndex()) {
+            // A stretch that opens with a pickup needs a bar number for it. The first one may use
+            // bar zero, which the chart renders as no number; a later one cannot, because that
+            // number already belongs to the music before the rest.
+            if (spanIndex > 0 && span.phase > 0) nextBar++
+            for (index in span.from until span.to) {
+                val local = index - span.from - span.phase
+                beats += BeatEvent(
+                    timeMs = beatTimesMs[index],
+                    beatInMeasure = local.mod(beatsPerMeasure) + 1,
+                    measureNumber = nextBar + Math.floorDiv(local, beatsPerMeasure),
+                    // A beat the tracker filled in was inferred from the beats either side of it,
+                    // not heard. Reporting it at the same confidence as a detected beat would
+                    // present an inference as an observation.
+                    confidence = if (beatDetected.getOrElse(index) { true }) {
+                        DetectedBeatConfidence
+                    } else {
+                        FilledBeatConfidence
+                    },
+                    source = AnalysisSource.MACHINE,
+                )
+            }
+            nextBar = (beats.lastOrNull()?.measureNumber ?: nextBar) + 1
         }
 
         val merged = mutableListOf<ChordEvent>()

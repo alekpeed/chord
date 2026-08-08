@@ -1,5 +1,6 @@
 package com.alekpeed.hearsay.core.audio
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
@@ -127,6 +128,51 @@ class SilentGapTest {
         // what a detected beat reports.
         val highest = result.chart.beats.maxOf { it.confidence }
         assertTrue("No beat should be more certain than a detected one, saw $highest", highest <= 0.7f)
+    }
+
+    @Test
+    fun `the opening chord belongs to a bar even when a rest follows it`() {
+        // Reported from a tablet: with a short intro, a pause and then the verse, the opening chord
+        // was written as a pickup outside any bar and the whole intro sat two beats off the grid.
+        // The cause was one downbeat phase for the entire recording. Six seconds at 100 BPM is ten
+        // beats, ten is not four, so the intro and the verse could not both be on it — and the
+        // verse, being longer, won.
+        val result = AudioAnalyzer(AnalysisSettings.Balanced)
+            .analyze(introPauseVerse(bpm = 100f, silentSeconds = 6.0), 1, rate)
+
+        val opening = result.chart.chordEvents.first()
+        val beat = requireNotNull(result.chart.beats.minByOrNull { abs(it.timeMs - opening.startMs) })
+        assertEquals(
+            "The opening chord should start a bar, not hang off the front of one",
+            1,
+            beat.beatInMeasure,
+        )
+        assertTrue("The opening bar should be numbered, saw ${beat.measureNumber}", beat.measureNumber >= 1)
+    }
+
+    @Test
+    fun `every chord starts on a downbeat on both sides of the rest`() {
+        val result = AudioAnalyzer(AnalysisSettings.Balanced)
+            .analyze(introPauseVerse(bpm = 100f, silentSeconds = 6.0), 1, rate)
+
+        // The fixture changes chord once per bar throughout, so anything landing off beat one is
+        // the grid disagreeing with the music rather than the music being syncopated.
+        val offBar = result.chart.chordEvents.count { event ->
+            val beat = result.chart.beats.minByOrNull { abs(it.timeMs - event.startMs) }
+            beat != null && beat.beatInMeasure != 1
+        }
+        assertTrue("Expected chords on bar lines, $offBar of ${result.chart.chordEvents.size} were not", offBar <= 1)
+    }
+
+    @Test
+    fun `bar numbers keep rising across the rest`() {
+        val result = AudioAnalyzer(AnalysisSettings.Balanced)
+            .analyze(introPauseVerse(bpm = 100f, silentSeconds = 6.0), 1, rate)
+
+        // Re-setting the bar line after a rest must not re-set the count: the verse is later in the
+        // song than the intro, and a chart that says bar 3 twice cannot be followed.
+        val numbers = result.chart.beats.map { it.measureNumber }
+        assertTrue("Bar numbers should never go backwards, saw $numbers", numbers.zipWithNext().all { it.first <= it.second })
     }
 
     @Test

@@ -647,22 +647,30 @@ data class TrackedBeat(val frame: Int, val detected: Boolean)
  */
 object DownbeatEstimator {
 
+    /** A stretch of continuous music and where its bar lines fall, [phase] counted from [from]. */
+    data class MetricalSpan(val from: Int, val to: Int, val phase: Int)
+
+    /** A gap this much wider than the beat spacing is a rest, not a beat the tracker missed. */
+    private const val RestFactor = 1.9
+
     fun estimate(
         beatFrames: List<Int>,
         envelope: OnsetEnvelope,
         chordChangeStrength: FloatArray?,
         beatsPerMeasure: Int,
+        from: Int = 0,
+        to: Int = beatFrames.size,
     ): Int {
-        if (beatFrames.isEmpty() || beatsPerMeasure <= 1) return 0
+        if (from >= to || beatsPerMeasure <= 1) return 0
 
         var bestPhase = 0
         var bestScore = Float.NEGATIVE_INFINITY
 
         for (phase in 0 until beatsPerMeasure) {
             var score = 0f
-            for ((index, frame) in beatFrames.withIndex()) {
-                if ((index - phase).mod(beatsPerMeasure) != 0) continue
-                score += envelope.values.getOrElse(frame) { 0f }
+            for (index in from until to) {
+                if ((index - from - phase).mod(beatsPerMeasure) != 0) continue
+                score += envelope.values.getOrElse(beatFrames[index]) { 0f }
                 if (chordChangeStrength != null) {
                     score += 2.5f * chordChangeStrength.getOrElse(index) { 0f }
                 }
@@ -673,6 +681,54 @@ object DownbeatEstimator {
             }
         }
         return bestPhase
+    }
+
+    /**
+     * Where the bar lines fall, allowing them to be re-set after a rest.
+     *
+     * One phase for a whole recording is only correct if every rest in it happens to last a whole
+     * number of bars. A six-second pause at 100 BPM is ten beats, and ten is not four: the music
+     * before the rest and the music after it cannot both sit on the same phase, so whichever side
+     * has fewer beats loses and comes out rotated. On a song with a short intro that is the intro,
+     * and the opening chord is reported as a pickup that belongs to no bar.
+     *
+     * So each continuous stretch gets its own bar one, which is also how a musician reads it: the
+     * verse after a break starts a bar, it does not inherit the intro's count.
+     */
+    fun spans(
+        beatFrames: List<Int>,
+        beatTimesMs: List<Long>,
+        envelope: OnsetEnvelope,
+        chordChangeStrength: FloatArray?,
+        beatsPerMeasure: Int,
+    ): List<MetricalSpan> {
+        if (beatFrames.isEmpty()) return emptyList()
+        return boundaries(beatTimesMs).zipWithNext { from, to ->
+            // A stretch too short to show a bar cannot argue about where its bar line is; starting
+            // it on a downbeat is the reading that assumes least.
+            val phase = if (to - from >= beatsPerMeasure) {
+                estimate(beatFrames, envelope, chordChangeStrength, beatsPerMeasure, from, to)
+            } else {
+                0
+            }
+            MetricalSpan(from, to, phase)
+        }
+    }
+
+    /** Indices where a stretch begins, plus the end — every rest wide enough to be one. */
+    private fun boundaries(beatTimesMs: List<Long>): List<Int> {
+        val result = mutableListOf(0)
+        if (beatTimesMs.size >= 3) {
+            val spacings = beatTimesMs.zipWithNext { a, b -> b - a }.sorted()
+            val median = spacings[spacings.size / 2]
+            if (median > 0) {
+                for (index in 1 until beatTimesMs.size) {
+                    if (beatTimesMs[index] - beatTimesMs[index - 1] > median * RestFactor) result += index
+                }
+            }
+        }
+        result += beatTimesMs.size
+        return result
     }
 
     /**
