@@ -414,7 +414,10 @@ object BeatTracker {
      * that drifts away from a recording and one that stays with it: the deviation penalty is now
      * measured against what the music is doing there, not against an average of the whole song.
      */
-    fun track(envelope: OnsetEnvelope, curve: TempoCurve): List<Int> {
+    fun track(envelope: OnsetEnvelope, curve: TempoCurve): List<Int> =
+        trackDetailed(envelope, curve).map(TrackedBeat::frame)
+
+    private fun layGrid(envelope: OnsetEnvelope, curve: TempoCurve): List<TrackedBeat> {
         if (envelope.size < 2) return emptyList()
         if (curve.periodAt(0) < 1f) return emptyList()
 
@@ -466,8 +469,54 @@ object BeatTracker {
             cursor = backlink[cursor]
         }
         beats.reverse()
-        return regularize(beats, envelope, curve)
+        return dropSilentBeats(regularize(beats, envelope, curve), envelope, curve)
     }
+
+    /**
+     * Removes beats the recording never played.
+     *
+     * The dynamic program scores every frame and carries its total forward, so the backtrace lays a
+     * perfectly regular grid straight through a rest — silence costs it nothing. That is separate
+     * from gap filling and had to be fixed separately: a pause between an intro and a verse came
+     * back fully beaten, and the bar numbers counted through it.
+     *
+     * Only a sustained silence qualifies. A single quiet beat inside a phrase is ordinary music and
+     * keeps its place in the grid; what is dropped is a stretch where nothing sounded for at least
+     * a beat, measured against the recording's own quiet level rather than an absolute one.
+     */
+    private fun dropSilentBeats(
+        beats: List<TrackedBeat>,
+        envelope: OnsetEnvelope,
+        curve: TempoCurve,
+    ): List<TrackedBeat> {
+        if (beats.size < 3) return beats
+        val floor = silenceFloor(envelope)
+        val kept = beats.filter { beat ->
+            val period = curve.periodAt(beat.frame).roundToInt().coerceAtLeast(1)
+            !isSilentAround(envelope, beat.frame, period, floor)
+        }
+        // Never hand back an empty grid: a recording quiet throughout is better served by the grid
+        // the tracker found than by nothing at all.
+        return if (kept.size >= MinimumGridBeats) kept else beats
+    }
+
+    /** Whether nothing sounded for a beat either side of this frame. */
+    private fun isSilentAround(envelope: OnsetEnvelope, frame: Int, period: Int, floor: Float): Boolean {
+        val from = frame - period / 2
+        val to = frame + period / 2
+        var loudest = 0f
+        var counted = 0
+        for (index in from..to) {
+            if (index !in envelope.values.indices) continue
+            counted++
+            loudest = max(loudest, envelope.values[index])
+        }
+        return counted > 0 && loudest <= floor
+    }
+
+    /** The same grid, each beat saying whether the recording actually put anything there. */
+    fun trackDetailed(envelope: OnsetEnvelope, curve: TempoCurve): List<TrackedBeat> =
+        layGrid(envelope, curve)
 
     /**
      * Repairs the two ways the backtrace can misbehave.
@@ -476,41 +525,105 @@ object BeatTracker {
      * period; and a quiet passage can leave a gap of two or three beats with nothing marked. Both
      * are corrected against the median interval, which is far more robust than the nominal tempo
      * because it reflects what the tracker actually found.
+     *
+     * A gap is only filled when the recording carried on through it. The tracker cannot tell a
+     * passage it under-detected from a passage where nothing is playing, so filling every gap
+     * invents beats across rests: a pause between an intro and a verse became bars of counted
+     * silence, and the bar numbers marched on through it. Filled beats are marked undetected,
+     * because a beat nobody played is an inference and should not be presented as an observation.
      */
-    private fun regularize(beats: List<Int>, envelope: OnsetEnvelope, curve: TempoCurve): List<Int> {
-        if (beats.size < 3) return beats
+    private fun regularize(
+        beats: List<Int>,
+        envelope: OnsetEnvelope,
+        curve: TempoCurve,
+    ): List<TrackedBeat> {
+        if (beats.size < 3) return beats.map { TrackedBeat(it, detected = true) }
 
-        val kept = mutableListOf(beats.first())
+        val floor = silenceFloor(envelope)
+        val kept = mutableListOf(TrackedBeat(beats.first(), detected = true))
+
         for (index in 1 until beats.size) {
             val candidate = beats[index]
-            val gap = candidate - kept.last()
+            val gap = candidate - kept.last().frame
             // The expected spacing is read where the gap is, not averaged over the recording. A
             // global median would repair a gap in a slow passage using a fast passage's spacing,
             // which is how a filled gap reintroduces exactly the drift this is meant to remove.
-            val median = curve.periodAt(kept.last()).roundToInt().coerceAtLeast(1)
+            val median = curve.periodAt(kept.last().frame).roundToInt().coerceAtLeast(1)
 
             if (gap < TooCloseFraction * median) {
                 // Keep whichever of the two has more onset energy behind it.
                 val incoming = envelope.values.getOrElse(candidate) { 0f }
-                val existing = envelope.values.getOrElse(kept.last()) { 0f }
-                if (incoming > existing) kept[kept.lastIndex] = candidate
+                val existing = envelope.values.getOrElse(kept.last().frame) { 0f }
+                if (incoming > existing) kept[kept.lastIndex] = TrackedBeat(candidate, detected = true)
                 continue
             }
 
             if (gap > TooFarFraction * median) {
                 val missing = Math.round(gap.toFloat() / median) - 1
-                repeat(missing) {
-                    kept += kept.last() + Math.round(gap.toFloat() / (missing + 1))
+                if (missing in 1..MaxFilledBeats && carriedOn(envelope, kept.last().frame, candidate, floor)) {
+                    val step = Math.round(gap.toFloat() / (missing + 1))
+                    repeat(missing) { kept += TrackedBeat(kept.last().frame + step, detected = false) }
                 }
             }
-            kept += candidate
+            kept += TrackedBeat(candidate, detected = true)
         }
         return kept
     }
 
+    /**
+     * Whether the recording was still sounding between two beats.
+     *
+     * Measured against the recording's own quiet passages rather than an absolute level: the onset
+     * envelope is normalized, so a ballad's noise floor is nothing like a dense mix's. A rest is
+     * silent relative to the piece it sits in.
+     */
+    private fun carriedOn(envelope: OnsetEnvelope, from: Int, to: Int, floor: Float): Boolean {
+        if (to - from < 2) return true
+        var sounding = 0
+        var counted = 0
+        for (frame in (from + 1) until to) {
+            if (frame !in envelope.values.indices) continue
+            counted++
+            if (envelope.values[frame] > floor) sounding++
+        }
+        if (counted == 0) return true
+        return sounding.toFloat() / counted >= SoundingFraction
+    }
+
+    /** The level below which this recording is, for its own purposes, quiet. */
+    private fun silenceFloor(envelope: OnsetEnvelope): Float {
+        if (envelope.size == 0) return AbsoluteSilenceFloor
+        val sorted = envelope.values.sortedArray()
+        val low = sorted[(sorted.size * SilenceQuantile).toInt().coerceIn(0, sorted.size - 1)]
+        return maxOf(low, AbsoluteSilenceFloor)
+    }
+
     private const val TooCloseFraction = 0.72f
     private const val TooFarFraction = 1.55f
+
+    /**
+     * How many beats may be invented to bridge one gap.
+     *
+     * Beyond this the claim stops being a repair and becomes a fabricated passage. A long gap the
+     * music did play through is still bridged, in stages, by the beats the tracker did find.
+     */
+    private const val MaxFilledBeats = 3
+
+    /** Fraction of a gap's frames that must be above the floor for the music to count as playing. */
+    private const val SoundingFraction = 0.35f
+
+    /** Quantile of the recording's own envelope taken as its quiet level. */
+    private const val SilenceQuantile = 0.30
+
+    /** A normalized envelope this low is silence in any recording. */
+    private const val AbsoluteSilenceFloor = 0.02f
+
+    /** Below this many surviving beats, keeping the original grid beats handing back nothing. */
+    private const val MinimumGridBeats = 8
 }
+
+/** A beat in the grid, and whether the recording actually put anything there. */
+data class TrackedBeat(val frame: Int, val detected: Boolean)
 
 /**
  * Which beat is beat one.
