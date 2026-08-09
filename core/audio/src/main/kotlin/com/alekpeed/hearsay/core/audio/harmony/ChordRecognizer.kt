@@ -51,9 +51,7 @@ class ChordRecognizer(
      * @param bassChroma optional low-band chroma used to name inversions and slash chords.
      * @param key the estimated key, which decides between chords the chroma cannot separate.
      * @param changeLikelihood per span, how strongly the audio says the harmony turned over at its
-     *   start, from the chroma alone.
-     * @param changePoints per span, whether that start was detected as a change rather than merely
-     *   being a beat.
+     *   start. Where it is high the decoder's reluctance to change chord is relaxed.
      */
     fun recognize(
         chroma: Chromagram,
@@ -62,7 +60,6 @@ class ChordRecognizer(
         preferFlats: Boolean = false,
         key: KeyContext? = null,
         changeLikelihood: FloatArray? = null,
-        changePoints: BooleanArray? = null,
     ): List<RecognizedChord> {
         if (beatTimesMs.size < 2) return emptyList()
 
@@ -70,7 +67,7 @@ class ChordRecognizer(
         val observations = spans.map { (start, end) -> chroma.averageBetween(start, end) }
         val priors = contextPriors(key)
         val emissions = observations.map { emissionScores(it, priors) }
-        val path = viterbi(emissions, changeLikelihood, changePoints)
+        val path = viterbi(emissions, changeLikelihood)
         val refined = refineSpans(spans, path, chroma)
 
         return refined.mapIndexed { index, (start, end) ->
@@ -295,19 +292,10 @@ class ChordRecognizer(
      * which is the failure that matters most, because a wrong name can be corrected and a change
      * that was never detected cannot be.
      *
-     * So the reluctance now varies with the evidence, in both directions. At a detected change
-     * point it is relaxed, so a change the templates are unsure of can still be reported. Anywhere
-     * else it is *raised*, in proportion to how steady the chroma is across that moment — because
-     * the opposite failure is just as real and is the one a player complains about second: a chart
-     * that reports four chords in a bar of one, oscillating between two namings of the same sound.
-     * A uniform reluctance cannot tell those apart; it is either too loose everywhere or too tight
-     * everywhere. The evidence for which one this moment is was already being computed.
+     * So the reluctance is relaxed in proportion to the evidence that this is a change point. Not
+     * removed: where the harmony is steady the decoder stays exactly as sticky as before.
      */
-    private fun viterbi(
-        emissions: List<FloatArray>,
-        changeLikelihood: FloatArray?,
-        changePoints: BooleanArray?,
-    ): IntArray {
+    private fun viterbi(emissions: List<FloatArray>, changeLikelihood: FloatArray?): IntArray {
         val states = ChordTemplates.StateCount
         val steps = emissions.size
         val delta = Array(steps) { FloatArray(states) }
@@ -319,11 +307,7 @@ class ChordRecognizer(
 
         for (step in 1 until steps) {
             val change = changeLikelihood?.getOrNull(step)?.coerceIn(0f, 1f) ?: 0f
-            val stickiness = if (changePoints?.getOrNull(step) == true) {
-                selfTransitionBonus * (1f - ChangeRelief * change)
-            } else {
-                selfTransitionBonus * (1f + SteadyBoost * (1f - change))
-            }
+            val stickiness = selfTransitionBonus * (1f - ChangeRelief * change)
             for (state in 0 until states) {
                 var bestScore = Float.NEGATIVE_INFINITY
                 var bestPrevious = 0
@@ -426,15 +410,6 @@ class ChordRecognizer(
          * win if the chroma after it plainly matches the chord before.
          */
         const val ChangeRelief = 0.60f
-
-        /**
-         * How much harder it is to change chord at a moment the chroma says nothing happened.
-         *
-         * This is what stops the decoder alternating between two namings of one sound — Dm9, Am,
-         * Dm7, Am7 inside a single bar, reported from a tablet on a recording whose harmony did
-         * not move at all across those four rows.
-         */
-        const val SteadyBoost = 1.2f
 
         // Relative to 1.0, which is "the key says nothing about this chord".
         const val TonicFit = 1.30f
