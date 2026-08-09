@@ -243,8 +243,9 @@ class ChordRecognizer(
         if (key.isMinor) setOf(0, 2, 3, 5, 7, 8, 10) else setOf(0, 2, 4, 5, 7, 9, 11)
 
     /**
-     * Scores candidate identity from the unmasked harmonic observation. A sustained bass root gets
-     * one small tie-breaking multiplier; a passing bass note never receives that multiplier.
+     * Scores candidate identity from the unmasked harmonic observation. A sustained bass root may
+     * break a close seventh-versus-subset tie only when the seventh itself is also audible. Passing
+     * bass never receives that multiplier, and a plain triad cannot become a seventh from bass alone.
      */
     private fun emissionScores(
         observed: FloatArray,
@@ -262,8 +263,12 @@ class ChordRecognizer(
                 }
                 dot += observed[pc] * candidate.vector[pc] * weight
             }
-            val bassTieBreak = if (sustainedBassRoot != null && candidate.root == sustainedBassRoot) {
-                SustainedBassRootBoost
+            val bassTieBreak = if (
+                sustainedBassRoot != null &&
+                candidate.root == sustainedBassRoot &&
+                hasSeventhSupport(candidate, observed)
+            ) {
+                SustainedSeventhRootBoost
             } else {
                 1f
             }
@@ -274,6 +279,19 @@ class ChordRecognizer(
         for (value in observed) energy += value * value
         scores[ChordTemplates.NoChordIndex] = if (energy < 1e-4f) 1f else noChordThreshold
         return scores
+    }
+
+    private fun hasSeventhSupport(candidate: ChordTemplates.Candidate, observed: FloatArray): Boolean {
+        val interval = when (candidate.template.seventh) {
+            SeventhType.MINOR -> 10
+            SeventhType.MAJOR -> 11
+            SeventhType.DIMINISHED -> 9
+            SeventhType.NONE -> return false
+        }
+        val peak = observed.maxOrNull() ?: return false
+        if (peak <= 0f) return false
+        val pitchClass = Math.floorMod(candidate.root + interval, 12)
+        return observed.getOrElse(pitchClass) { 0f } >= peak * SeventhSupportRatio
     }
 
     /**
@@ -567,6 +585,13 @@ class ChordRecognizer(
         return path
     }
 
+    /**
+     * How natural a move between two chords is, as normalized shared pitch-class content.
+     *
+     * Raw shared-note counts accidentally reward changes between dense related chords. Jaccard
+     * similarity keeps this relationship signal in 0..1, so changing can never become more valuable
+     * merely because two candidates contain many of the same notes.
+     */
     private fun relatednessMatrix(): Array<FloatArray> {
         cachedRelatedness?.let { return it }
         val states = ChordTemplates.StateCount
@@ -579,7 +604,9 @@ class ChordRecognizer(
                 matrix[from][to] = if (from == ChordTemplates.NoChordIndex || to == ChordTemplates.NoChordIndex) {
                     0f
                 } else {
-                    pitchSets[from].intersect(pitchSets[to]).size.toFloat()
+                    val shared = pitchSets[from].intersect(pitchSets[to]).size
+                    val union = pitchSets[from].union(pitchSets[to]).size
+                    if (union == 0) 0f else shared.toFloat() / union
                 }
             }
         }
@@ -624,7 +651,8 @@ class ChordRecognizer(
     private companion object {
         const val KeyPriorStrength = 0.9f
         const val StructuralScaleStrength = 0.22f
-        const val SustainedBassRootBoost = 1.18f
+        const val SustainedSeventhRootBoost = 1.32f
+        const val SeventhSupportRatio = 0.35f
         const val ChangeRelief = 0.60f
         const val MinimumChangeCost = 0.15f
         const val FullChangeDistance = 0.12f
