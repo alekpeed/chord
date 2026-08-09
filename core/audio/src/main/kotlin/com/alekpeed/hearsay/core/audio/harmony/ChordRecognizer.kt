@@ -3,6 +3,7 @@ package com.alekpeed.hearsay.core.audio.harmony
 import com.alekpeed.hearsay.core.audio.feature.Chromagram
 import com.alekpeed.hearsay.core.model.music.Chord
 import com.alekpeed.hearsay.core.model.music.NoteSpelling
+import com.alekpeed.hearsay.core.model.music.SeventhType
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.max
@@ -48,7 +49,7 @@ class ChordRecognizer(
 
     /**
      * @param beatTimesMs boundaries of each analysis span; N boundaries yield N-1 spans.
-     * @param bassChroma optional low-band chroma used to name inversions and slash chords.
+     * @param bassChroma optional low-band chroma used to break close root ties and name inversions.
      * @param key the estimated key, which decides between chords the chroma cannot separate.
      * @param changeLikelihood per span, how strongly the audio says the harmony turned over at its
      *   start. Where it is high the decoder's reluctance to change chord is relaxed.
@@ -65,8 +66,13 @@ class ChordRecognizer(
 
         val spans = beatTimesMs.zipWithNext()
         val observations = spans.map { (start, end) -> chroma.averageBetween(start, end) }
+        val bassObservations = bassChroma?.let { low ->
+            spans.map { (start, end) -> low.averageBetween(start, end) }
+        }
         val priors = contextPriors(key)
-        val emissions = observations.map { emissionScores(it, priors) }
+        val emissions = observations.mapIndexed { index, observation ->
+            emissionScores(observation, priors, bassObservations?.getOrNull(index))
+        }
         val path = viterbi(emissions, changeLikelihood)
         val refined = refineSpans(spans, path, chroma)
 
@@ -138,7 +144,6 @@ class ChordRecognizer(
      * Em7 — they are the same four pitch classes — nor Gmaj7 from Bm7, which share three of four.
      * Knowing the piece is in G decides both, and the estimate was already being computed and used
      * only to choose between sharps and flats.
-     *
      */
     private fun contextPriors(key: KeyContext?): FloatArray {
         val priors = FloatArray(ChordTemplates.Candidates.size)
@@ -171,29 +176,82 @@ class ChordRecognizer(
     /**
      * Cosine similarity against every template, scaled by that template's prior.
      *
-     * The sixth or seventh a chord is named for counts for less than its triad, by
-     * [extensionPenalty]. That is deliberately not a penalty on the whole chord: damping the match
-     * outright makes a real Dm7 lose to plain F, because F major is a subset of Dm7 — the chart
-     * gets simpler by getting the root wrong, which is worse than the problem. Damping only the
-     * added note leaves root, third and fifth arguing at full strength, so a seventh that is really
-     * being played still wins and one resting on a passing tone falls back to its own triad.
+     * Color tones count for less than the triad or suspension underneath them, by
+     * [extensionPenalty]. That includes ninths and altered tensions, not just sixths and sevenths.
+     * The old test only recognized intervals 9, 10 and 11 as color, so a detected ninth was never
+     * actually penalized and dense labels such as maj9 were easier to invent than the detail setting
+     * claimed. Root, third/suspension and fifth stay at full strength so simplification cannot make
+     * a correct root lose merely because a related triad is a subset of the chord.
+     *
+     * Low-band chroma is used only as a tiebreaker among already-close full-band candidates. It is
+     * never a penalty on a root, because an inversion legitimately puts another chord tone in the
+     * bass. This lets a clear F bass settle Fm7 versus Ab-family readings without turning C/E into
+     * Em whenever the bass happens to be E.
      */
-    private fun emissionScores(observed: FloatArray, priors: FloatArray): FloatArray {
+    private fun emissionScores(
+        observed: FloatArray,
+        priors: FloatArray,
+        bassObserved: FloatArray?,
+    ): FloatArray {
         val scores = FloatArray(ChordTemplates.StateCount)
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
             var dot = 0f
             for (pc in 0 until 12) {
-                val weight = if (extensionPenalty != 1f && candidate.isExtensionTone(pc)) extensionPenalty else 1f
+                val weight = if (extensionPenalty != 1f && isColorTone(candidate, pc)) extensionPenalty else 1f
                 dot += observed[pc] * candidate.vector[pc] * weight
             }
             scores[index] = dot * priors[index]
         }
+        applyBassRootTieBreak(scores, bassObserved)
+
         // No chord wins when nothing has any energy or nothing matches anything.
         var energy = 0f
         for (value in observed) energy += value * value
         scores[ChordTemplates.NoChordIndex] =
             if (energy < 1e-4f) 1f else noChordThreshold
         return scores
+    }
+
+    /** Whether this pitch class is harmonic color rather than the chord's structural shell. */
+    private fun isColorTone(candidate: ChordTemplates.Candidate, pitchClass: Int): Boolean {
+        val template = candidate.template
+        val intervals = mutableSetOf<Int>()
+        when (template.seventh) {
+            SeventhType.MINOR -> intervals += 10
+            SeventhType.MAJOR -> intervals += 11
+            SeventhType.DIMINISHED -> intervals += 9
+            SeventhType.NONE -> Unit
+        }
+        if (template.sixth) intervals += 9
+        for (degree in template.extensions) {
+            when (degree) {
+                9 -> intervals += 2
+                11 -> intervals += 5
+                13 -> intervals += 9
+            }
+        }
+        for (alteration in template.alterations) {
+            if (alteration.degree > 5) intervals += alteration.semitonesFromRoot
+        }
+        return intervals.any { Math.floorMod(candidate.root + it, 12) == pitchClass }
+    }
+
+    /**
+     * Lets a clearly supported bass root break a close full-band tie, without overriding one.
+     */
+    private fun applyBassRootTieBreak(scores: FloatArray, bassObserved: FloatArray?) {
+        if (bassObserved == null || bassObserved.isEmpty()) return
+        val peak = bassObserved.maxOrNull() ?: return
+        if (peak < BassPresenceThreshold) return
+        val bestFullBand = ChordTemplates.Candidates.indices.maxOfOrNull { scores[it] } ?: return
+        if (bestFullBand <= 0f) return
+
+        for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
+            if (scores[index] < bestFullBand * BassTieBreakFloor) continue
+            val support = (bassObserved.getOrElse(candidate.root) { 0f } / peak).coerceIn(0f, 1f)
+            if (support < BassRootSupportFloor) continue
+            scores[index] *= 1f + BassRootPriorStrength * support
+        }
     }
 
     /**
@@ -275,7 +333,7 @@ class ChordRecognizer(
         val candidate = ChordTemplates.Candidates[state]
         var dot = 0f
         for (pc in 0 until 12) {
-            val weight = if (extensionPenalty != 1f && candidate.isExtensionTone(pc)) extensionPenalty else 1f
+            val weight = if (extensionPenalty != 1f && isColorTone(candidate, pc)) extensionPenalty else 1f
             dot += frame[pc] * candidate.vector[pc] * weight
         }
         return dot
@@ -339,10 +397,13 @@ class ChordRecognizer(
     }
 
     /**
-     * How natural a move between two chords is, as shared pitch-class content.
+     * How natural a move between two chords is, as normalized shared pitch-class content.
      *
-     * Cheap and effective: a ii–V shares two notes and scores high, a tritone leap shares little
-     * and scores low, so the decoder does not wander into unrelated keys on one ambiguous beat.
+     * This must stay in 0..1. The old matrix returned the raw number of shared notes, so two dense
+     * related chords sharing four notes earned 0.4 * 4 = 1.6 for changing while staying earned only
+     * 1.5. In other words the decoder was literally rewarded for flickering between related seventh
+     * and ninth chords. Jaccard similarity preserves the useful relationship signal without ever
+     * making a change cheaper than an ordinary self-transition.
      */
     private fun relatednessMatrix(): Array<FloatArray> {
         if (cachedRelatedness != null) return cachedRelatedness!!
@@ -358,7 +419,8 @@ class ChordRecognizer(
                     continue
                 }
                 val shared = pitchSets[from].intersect(pitchSets[to]).size
-                matrix[from][to] = shared.toFloat()
+                val union = pitchSets[from].union(pitchSets[to]).size
+                matrix[from][to] = if (union == 0) 0f else shared.toFloat() / union
             }
         }
         cachedRelatedness = matrix
@@ -419,6 +481,15 @@ class ChordRecognizer(
 
         const val AlternateCount = 3
         const val BassPresenceThreshold = 0.25f
+
+        /** Only candidates already this close to the best full-band match may receive a bass boost. */
+        const val BassTieBreakFloor = 0.92f
+
+        /** The candidate root must carry at least this fraction of the strongest low-band pitch. */
+        const val BassRootSupportFloor = 0.55f
+
+        /** Maximum advisory boost for a bass-supported root that survived the full-band tie gate. */
+        const val BassRootPriorStrength = 0.15f
 
         /** How much louder than the root a low note must be before it is called an inversion. */
         const val BassDominanceRatio = 1.5f
