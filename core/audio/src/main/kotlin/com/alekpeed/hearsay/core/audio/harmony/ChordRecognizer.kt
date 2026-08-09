@@ -292,7 +292,7 @@ class ChordRecognizer(
                     additions = emptySet(),
                     bass = null,
                 ).normalized()
-                val colored = if (extensionPenalty >= FullColorPenaltyFloor) {
+                val colored = if (extensionPenalty >= ColorEnrichmentPenaltyFloor) {
                     addStableColor(base, normalized)
                 } else {
                     base
@@ -328,11 +328,10 @@ class ChordRecognizer(
     }
 
     /**
-     * Adds the strongest stable color in each extension family.
+     * Adds stable upper color without letting that color create a separate harmonic identity.
      *
-     * Several colors can coexist: for example a dominant region can become C9#11 or C7b9b13 when
-     * those pitch classes remain present across the region. The threshold is tied to the structural
-     * chord energy, so a quiet but sustained tension can be named while broadband leakage is ignored.
+     * The work is split by chord family so the decisions stay independently testable: seventh
+     * chords can carry altered 9/11/13 color, while triads use add9/add11 notation.
      */
     private fun addStableColor(base: Chord, observed: FloatArray): Chord {
         val structural = base.copy(
@@ -341,17 +340,23 @@ class ChordRecognizer(
             additions = emptySet(),
             bass = null,
         )
-        val structuralPcs = structural.pitchClasses()
-        val structuralLevel = structuralPcs
+        val structuralLevel = structural.pitchClasses()
             .map { observed.getOrElse(it) { 0f } }
             .average()
             .toFloat()
             .coerceAtLeast(1e-6f)
         val threshold = maxOf(ColorAbsoluteFloor, structuralLevel * ColorRelativeFloor)
 
+        return if (base.seventh != SeventhType.NONE) {
+            addSeventhChordColor(base, observed, threshold)
+        } else {
+            addTriadColor(base, observed, threshold)
+        }
+    }
+
+    private fun addSeventhChordColor(base: Chord, observed: FloatArray, threshold: Float): Chord {
         val root = base.root.pitchClass
         val extensions = base.extensions.toMutableSet()
-        val additions = base.additions.toMutableSet()
         val alterations = base.alterations.filter { it.degree <= 5 }.toMutableSet()
 
         fun support(interval: Int): Float = observed[Math.floorMod(root + interval, 12)]
@@ -359,49 +364,46 @@ class ChordRecognizer(
             .filter { support(it.first) >= threshold }
             .maxByOrNull { support(it.first) }
             ?.second
-
-        if (base.seventh != SeventhType.NONE) {
-            val ninthOptions = buildList<Pair<Int, Any>> {
-                add(1 to Alteration.FLAT_NINE)
-                add(2 to 9)
-                if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.SUSPENDED) {
-                    add(3 to Alteration.SHARP_NINE)
-                }
+        fun addChoice(choice: Any?) {
+            when (choice) {
+                is Int -> extensions += choice
+                is Alteration -> alterations += choice
             }
-            when (val ninth = choose(ninthOptions)) {
-                is Int -> extensions += ninth
-                is Alteration -> alterations += ninth
-            }
-
-            val eleventhOptions = buildList<Pair<Int, Any>> {
-                if (base.quality != ChordQuality.SUSPENDED || 4 !in base.suspensions) add(5 to 11)
-                if (base.quality != ChordQuality.DIMINISHED) add(6 to Alteration.SHARP_ELEVEN)
-            }
-            when (val eleventh = choose(eleventhOptions)) {
-                is Int -> extensions += eleventh
-                is Alteration -> alterations += eleventh
-            }
-
-            if (!base.sixth) {
-                val thirteenthOptions = buildList<Pair<Int, Any>> {
-                    if (base.quality != ChordQuality.AUGMENTED) add(8 to Alteration.FLAT_THIRTEEN)
-                    add(9 to 13)
-                }
-                when (val thirteenth = choose(thirteenthOptions)) {
-                    is Int -> extensions += thirteenth
-                    is Alteration -> alterations += thirteenth
-                }
-            }
-        } else if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.MINOR) {
-            if (support(2) >= threshold) additions += 9
-            if (support(5) >= threshold) additions += 11
         }
 
-        return base.copy(
-            extensions = extensions,
-            additions = additions,
-            alterations = alterations,
-        ).normalized()
+        val ninthOptions = buildList<Pair<Int, Any>> {
+            add(1 to Alteration.FLAT_NINE)
+            add(2 to 9)
+            if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.SUSPENDED) {
+                add(3 to Alteration.SHARP_NINE)
+            }
+        }
+        addChoice(choose(ninthOptions))
+
+        val eleventhOptions = buildList<Pair<Int, Any>> {
+            if (base.quality != ChordQuality.SUSPENDED || 4 !in base.suspensions) add(5 to 11)
+            if (base.quality != ChordQuality.DIMINISHED) add(6 to Alteration.SHARP_ELEVEN)
+        }
+        addChoice(choose(eleventhOptions))
+
+        if (!base.sixth) {
+            val thirteenthOptions = buildList<Pair<Int, Any>> {
+                if (base.quality != ChordQuality.AUGMENTED) add(8 to Alteration.FLAT_THIRTEEN)
+                add(9 to 13)
+            }
+            addChoice(choose(thirteenthOptions))
+        }
+
+        return base.copy(extensions = extensions, alterations = alterations).normalized()
+    }
+
+    private fun addTriadColor(base: Chord, observed: FloatArray, threshold: Float): Chord {
+        if (base.quality != ChordQuality.MAJOR && base.quality != ChordQuality.MINOR) return base
+        val root = base.root.pitchClass
+        val additions = base.additions.toMutableSet()
+        if (observed[Math.floorMod(root + 2, 12)] >= threshold) additions += 9
+        if (observed[Math.floorMod(root + 5, 12)] >= threshold) additions += 11
+        return base.copy(additions = additions).normalized()
     }
 
     /** Moves each true harmonic-identity change to where the audio changes, not to the nearest beat. */
@@ -593,8 +595,8 @@ class ChordRecognizer(
         const val BassPresenceThreshold = 0.25f
         const val BassDominanceRatio = 1.5f
 
-        /** Color enrichment is intentionally reserved for the FULL-detail recognizer. */
-        const val FullColorPenaltyFloor = 0.99f
+        /** Standard and full detail both keep stable upper color; simple remains a lead-sheet view. */
+        const val ColorEnrichmentPenaltyFloor = 0.90f
         const val ColorAbsoluteFloor = 0.18f
         const val ColorRelativeFloor = 0.42f
 
