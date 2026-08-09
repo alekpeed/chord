@@ -1,6 +1,8 @@
 package com.alekpeed.hearsay.core.audio
 
 import com.alekpeed.hearsay.core.model.music.ChordFormatter
+import com.alekpeed.hearsay.core.model.music.ChordQuality
+import com.alekpeed.hearsay.core.model.music.SeventhType
 import com.alekpeed.hearsay.core.model.music.SymbolStyle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -84,7 +86,6 @@ class AudioAnalyzerTest {
         val spacings = beats.zipWithNext { a, b -> b.timeMs - a.timeMs }
         val average = spacings.average()
         assertTrue("Expected about 500 ms between beats, got $average", abs(average - 500.0) < 40.0)
-        // Every gap should be close to the average: a tracker that drops or doubles beats fails here.
         assertTrue(
             "Beat spacing was not steady: ${spacings.distinct().sorted()}",
             spacings.all { abs(it - average) < 90 },
@@ -98,7 +99,6 @@ class AudioAnalyzerTest {
         val symbols = symbolsOf(result)
 
         assertTrue("Expected chords, got none", symbols.isNotEmpty())
-        // The progression repeats, so the recovered set should be exactly these three roots.
         assertEquals(setOf("C", "F", "G"), symbols.toSet())
     }
 
@@ -106,11 +106,37 @@ class AudioAnalyzerTest {
     fun `recognizes minor and dominant sevenths`() {
         val (samples, _) = SignalGenerator.progression(listOf("Dm7", "G7", "Cmaj7", "Cmaj7"), repeats = 3)
         val result = analyze(samples)
+        val chords = result.chart.chordEvents.mapNotNull { it.chord }
         val symbols = symbolsOf(result)
 
-        assertTrue("Expected Dm7 among $symbols", symbols.any { it == "Dm7" })
-        assertTrue("Expected G7 among $symbols", symbols.any { it == "G7" })
-        assertTrue("Expected Cmaj7 among $symbols", symbols.any { it == "Cmaj7" })
+        assertTrue(
+            "Expected Dm7 harmonic identity among $symbols",
+            chords.any {
+                it.root.pitchClass == 2 &&
+                    it.quality == ChordQuality.MINOR &&
+                    it.seventh == SeventhType.MINOR
+            },
+        )
+        assertTrue(
+            "Expected G7 harmonic identity among $symbols",
+            chords.any {
+                it.root.pitchClass == 7 &&
+                    it.quality == ChordQuality.MAJOR &&
+                    it.seventh == SeventhType.MINOR
+            },
+        )
+        assertTrue(
+            "Expected Cmaj7 harmonic identity among $symbols",
+            chords.any {
+                it.root.pitchClass == 0 &&
+                    it.quality == ChordQuality.MAJOR &&
+                    it.seventh == SeventhType.MAJOR
+            },
+        )
+        assertTrue(
+            "Subset triads must not replace the intended seventh-chord roots: $symbols",
+            chords.all { it.root.pitchClass in setOf(0, 2, 7) },
+        )
     }
 
     @Test
@@ -118,7 +144,6 @@ class AudioAnalyzerTest {
         val (samples, _) = SignalGenerator.progression(listOf("C", "Am"), repeats = 4)
         val symbols = symbolsOf(analyze(samples))
 
-        // C and Am share two notes; a recognizer without a root weighting confuses them constantly.
         assertTrue("Expected C among $symbols", symbols.any { it == "C" })
         assertTrue("Expected Am among $symbols", symbols.any { it == "Am" })
     }
@@ -128,7 +153,6 @@ class AudioAnalyzerTest {
         val (samples, _) = SignalGenerator.progression(listOf("C", "F"), beatsPerChord = 4, repeats = 3)
         val result = analyze(samples)
 
-        // Six chords of four beats each: a row per beat would be 24 regions.
         assertTrue(
             "Expected roughly one region per chord, got ${result.chart.chordEvents.size}",
             result.chart.chordEvents.size <= 10,
@@ -153,7 +177,6 @@ class AudioAnalyzerTest {
 
         assertEquals(4, result.beatsPerMeasure)
 
-        // Chords change every bar in this fixture, so most regions should start on a downbeat.
         val downbeatTimes = result.chart.beats.filter { it.isDownbeat }.map { it.timeMs }.toSet()
         val onDownbeat = result.chart.chordEvents.count { event ->
             downbeatTimes.any { abs(it - event.startMs) < 60 }
@@ -206,9 +229,6 @@ class AudioAnalyzerTest {
 
     @Test
     fun `a moving bass under one harmony does not become several chords`() {
-        // The complaint this exists for: the bass walks, and every note it lands on turns into a
-        // new row. To a musician that is one chord. Detail decides whether the inversion is named
-        // at all, but it must never split one harmony into three.
         val (samples, _) = SignalGenerator.progression(listOf("C", "C/E", "C/G", "C"), repeats = 3)
 
         val simple = analyze(samples, AnalysisSettings.Balanced.copy(detail = ChartDetail.SIMPLE))
@@ -237,8 +257,6 @@ class AudioAnalyzerTest {
 
     @Test
     fun `the key is used to choose between chords the chroma cannot separate`() {
-        // G6 and Em7 are the same four pitch classes. Nothing in the spectrum can tell them apart;
-        // only knowing the piece is in G can. This is the tiebreaker the recognizer was missing.
         val (samples, _) = SignalGenerator.progression(listOf("G", "C", "D", "G"), repeats = 4)
         val result = analyze(samples)
         val roots = result.chart.chordEvents.mapNotNull { it.chord?.root?.letter?.name }
