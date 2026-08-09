@@ -23,8 +23,8 @@ def main() -> None:
 
     text = replace_once(
         text,
-        """        val emissions = rawObservations.mapIndexed { index, observation ->\n            emissionScores(observation, priors, persistentRoots.getOrNull(index))\n        }\n""",
-        """        val emissions = rawObservations.mapIndexed { index, observation ->\n            emissionScores(observation, priors, persistentSupport.getOrNull(index))\n        }\n""",
+        """        val emissions = rawObservations.mapIndexed { index, observation ->\n            emissionScores(observation, priors, persistentRoots.getOrNull(index))\n        }\n        val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, changeObservations))\n        val refined = refineSpans(spans, path, chroma)\n""",
+        """        val emissions = rawObservations.mapIndexed { index, observation ->\n            emissionScores(observation, priors, persistentSupport.getOrNull(index))\n        }\n        val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, changeObservations))\n        val refined = refineSpans(spans, path, chroma, changeLikelihood)\n""",
     )
 
     marker = """    /**\n     * Novelty can be excited by a bass note even when bass is not allowed to determine the label.\n"""
@@ -112,6 +112,18 @@ def main() -> None:
 
 """
     text = text[:start] + replacement + text[end:]
+
+    text = replace_once(
+        text,
+        """    private fun refineSpans(\n        spans: List<Pair<Long, Long>>,\n        path: IntArray,\n        chroma: Chromagram,\n    ): List<Pair<Long, Long>> {\n""",
+        """    private fun refineSpans(\n        spans: List<Pair<Long, Long>>,\n        path: IntArray,\n        chroma: Chromagram,\n        detectedChangeLikelihood: FloatArray?,\n    ): List<Pair<Long, Long>> {\n""",
+    )
+
+    text = replace_once(
+        text,
+        """        for (index in 1 until spans.size) {\n            if (harmonicIdentity(path[index]) == harmonicIdentity(path[index - 1])) continue\n            starts[index] = bestSplitMs(\n""",
+        """        for (index in 1 until spans.size) {\n            if (harmonicIdentity(path[index]) == harmonicIdentity(path[index - 1])) continue\n            // A novelty peak is already an audio-measured boundary. Refining it again against\n            // uncertain chord templates can drag a correct transition hundreds of milliseconds.\n            // Beat-only boundaries still use spectral refinement so anticipated changes remain free\n            // to land ahead of or behind the grid.\n            if ((detectedChangeLikelihood?.getOrNull(index) ?: 0f) > 0f) continue\n            starts[index] = bestSplitMs(\n""",
+    )
 
     text = replace_once(
         text,
