@@ -26,14 +26,25 @@ data class ChordTemplate(
     /** Rarer shapes need stronger evidence, or they win by accident on a muddy frame. */
     val prior: Float = 1f,
 ) {
-    /** Weighted pitch-class vector: the notes that define the quality carry the most weight. */
+    /**
+     * Weighted pitch-class vector with the triadic shell treated as the primary identity.
+     *
+     * The previous model weighted root (1.15) and defining tone (1.10) almost equally, while the
+     * fifth and seventh both received the same generic upper-tone weight. That makes a subset triad
+     * such as F-A-C capable of outranking D-F-A-C and demoting the actual D root into an extension.
+     * Root, defining third/suspension, and fifth now establish the chord first; the seventh refines
+     * that established identity, and upper color is weaker still.
+     */
     fun vector(root: Int): FloatArray {
         val out = FloatArray(12)
         for ((position, interval) in intervals.withIndex()) {
-            val weight = when (position) {
-                0 -> RootWeight
-                1 -> DefiningWeight
-                else -> UpperWeight
+            val normalized = Math.floorMod(interval, 12)
+            val weight = when {
+                normalized == 0 -> RootWeight
+                position == 1 -> DefiningWeight
+                normalized == 7 || normalized == 6 || normalized == 8 -> FifthWeight
+                isNamedSeventhInterval(normalized) -> SeventhWeight
+                else -> UpperColorWeight
             }
             out[Math.floorMod(root + interval, 12)] += weight
         }
@@ -42,6 +53,13 @@ data class ChordTemplate(
         val norm = kotlin.math.sqrt(sum).toFloat()
         if (norm > 1e-6f) for (i in out.indices) out[i] /= norm
         return out
+    }
+
+    private fun isNamedSeventhInterval(interval: Int): Boolean = when (seventh) {
+        SeventhType.MINOR -> interval == 10
+        SeventhType.MAJOR -> interval == 11
+        SeventhType.DIMINISHED -> interval == 9
+        SeventhType.NONE -> false
     }
 
     fun toChord(root: NoteSpelling, bass: NoteSpelling? = null): Chord = Chord(
@@ -56,9 +74,20 @@ data class ChordTemplate(
     ).normalized()
 
     private companion object {
-        const val RootWeight = 1.15f
-        const val DefiningWeight = 1.1f
-        const val UpperWeight = 0.85f
+        /** Root evidence must dominate competing subset-root interpretations. */
+        const val RootWeight = 1.75f
+
+        /** The third or suspension establishes quality together with the root. */
+        const val DefiningWeight = 1.35f
+
+        /** The fifth completes the structural triadic shell. */
+        const val FifthWeight = 1.15f
+
+        /** A seventh refines an already-established triad; it does not choose a new root. */
+        const val SeventhWeight = 0.80f
+
+        /** Ninths, elevenths, thirteenths, and other upper color have the least root authority. */
+        const val UpperColorWeight = 0.65f
     }
 }
 
@@ -66,7 +95,8 @@ object ChordTemplates {
 
     /**
      * Interval lists are ordered root, then the tone that defines the quality (the third, or the
-     * fourth in a suspension), then everything else — which is what the weighting above reads.
+     * fourth in a suspension), then everything else. Weighting is structural rather than positional:
+     * the fifth remains part of the triadic shell even when a seventh appears before it in the list.
      */
     val All: List<ChordTemplate> = listOf(
         ChordTemplate("", listOf(0, 4, 7), ChordQuality.MAJOR, SeventhType.NONE, prior = 1.1f),
