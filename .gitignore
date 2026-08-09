@@ -23,3 +23,6 @@ training/data/
 training/models/
 __pycache__/
 *.pyc
+
+# Kotlin build tooling scratch, written next to the sources it compiles.
+.kotlin/
