@@ -40,6 +40,17 @@ jobs:
       - name: Static analysis
         run: ./gradlew detekt --stacktrace
 
+      - name: Unit tests
+        run: ./gradlew test --stacktrace
+
+      - name: Assemble debug
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Training-pipeline tests
+        run: |
+          python3 -m pip install --quiet numpy
+          python3 -m unittest discover training/tests
+
       - name: Build Linux desktop package
         run: |
           ./gradlew :tools:desktop:createDistributable --stacktrace
@@ -53,9 +64,6 @@ jobs:
           name: hearsay-desktop-linux
           path: dist/hearsay-desktop-linux.zip
           if-no-files-found: error
-
-      - name: Unit tests
-        run: ./gradlew test --stacktrace
 
       - name: Commit validated root support
         if: success() && github.head_ref == 'chatgpt/harmony-accuracy'
@@ -72,14 +80,6 @@ jobs:
           git add core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/harmony/ChordRecognizer.kt
           git commit -m 'Use persistent bass support for close root ties'
           git push origin HEAD:chatgpt/harmony-accuracy
-
-      - name: Assemble debug
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: Training-pipeline tests
-        run: |
-          python3 -m pip install --quiet numpy
-          python3 -m unittest discover training/tests
 
       - name: Upload test reports
         if: always()
