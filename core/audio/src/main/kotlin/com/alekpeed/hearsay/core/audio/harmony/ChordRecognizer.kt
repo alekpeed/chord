@@ -197,7 +197,7 @@ class ChordRecognizer(
                 val degree = Math.floorMod(candidate.root - key.tonicPitchClass, 12)
                 val rootFit = when {
                     degree == 0 -> TonicFit
-                    degree == 7 || degree == 5 -> DominantFit
+                    degree == 7 -> DominantFit
                     degree in scale -> DiatonicFit
                     else -> ChromaticFit
                 }
