@@ -25,12 +25,12 @@ data class ChordAlternate(val chord: Chord, val score: Float)
 data class KeyContext(val tonicPitchClass: Int, val isMinor: Boolean, val confidence: Float)
 
 /**
- * Reduces low-band pitch influence for change evidence only.
+ * Reduces low-band pitch influence for change evidence and bass-only transition checks.
  *
  * This must never feed chord-identity scoring. Once a spectrum has been folded into twelve pitch
  * classes, a low D bass and every higher D in the harmony are the same bin. Attenuating that bin in
  * the identity observation can turn Dm7 into its F-major subset or Cmaj7 into Em. The masked copy is
- * useful only for asking whether the non-bass harmony moved enough to relax temporal continuity.
+ * useful only for asking whether the non-bass harmony actually moved.
  */
 internal fun suppressBassInfluence(
     observed: FloatArray,
@@ -55,9 +55,10 @@ internal fun suppressBassInfluence(
     return Chromagram.normalize(out)
 }
 
-private const val BassMaskMaxSuppression = 0.65f
+private const val BassMaskMaxSuppression = 0.90f
 private const val PersistentBassSuppression = 0.15f
 private const val BassMaskPresenceThreshold = 0.25f
+private const val BassOnlyChangeDistance = 0.28f
 
 /**
  * Chord recognition whose state represents harmonic identity, not every spectral rearrangement.
@@ -110,6 +111,7 @@ class ChordRecognizer(
         }
         val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, changeObservations))
         alignDelayedTransitions(path, spans, changeLikelihood)
+        stabilizeBassOnlyTransitions(path, changeObservations, bassObservations)
         val refined = refineSpans(spans, path, chroma, changeLikelihood)
         val stableChords = enrichHarmonicRuns(path, rawObservations, preferFlats)
 
@@ -194,6 +196,35 @@ class ChordRecognizer(
             out[index] *= (harmonicDistance / FullChangeDistance).coerceIn(0f, 1f)
         }
         return out
+    }
+
+    /**
+     * Hard guard against bass-line chord churn. If the detected low bass moves but the
+     * bass-reduced upper harmony remains essentially the same, the harmonic state is not allowed
+     * to change. Applied after timing alignment so a timing correction cannot reintroduce it.
+     */
+    private fun stabilizeBassOnlyTransitions(
+        path: IntArray,
+        bassReducedObservations: List<FloatArray>,
+        bassObservations: List<FloatArray>?,
+    ) {
+        if (bassObservations == null || path.size < 2) return
+        val limit = minOf(path.size, bassReducedObservations.size, bassObservations.size)
+        for (index in 1 until limit) {
+            if (path[index] == path[index - 1]) continue
+            val previousBass = dominantPitchClass(bassObservations[index - 1])
+            val currentBass = dominantPitchClass(bassObservations[index])
+            if (previousBass == null || currentBass == null || previousBass == currentBass) continue
+
+            var dot = 0f
+            for (pc in 0 until 12) {
+                dot += bassReducedObservations[index - 1][pc] * bassReducedObservations[index][pc]
+            }
+            val upperHarmonyDistance = (1f - dot).coerceIn(0f, 1f)
+            if (upperHarmonyDistance <= BassOnlyChangeDistance) {
+                path[index] = path[index - 1]
+            }
+        }
     }
 
     /** Bass is named only after harmonic identity is settled. */
