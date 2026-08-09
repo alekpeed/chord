@@ -272,16 +272,25 @@ class ChordRecognizer(
         return scores
     }
 
+    /**
+     * In Standard and Full detail, the seventh/sixth is part of harmonic identity rather than
+     * disposable color. Penalizing it made Dm7 collapse to its F-major subset and Cmaj7 collapse to
+     * Em, exactly the opposite of the requested rich-but-stable output. Simple detail still applies
+     * its reduction to those tones. Upper extensions and altered tensions remain detail-weighted in
+     * every mode and are enriched after the structural identity is stable.
+     */
     private fun isColorTone(candidate: ChordTemplates.Candidate, pitchClass: Int): Boolean {
         val template = candidate.template
         val intervals = mutableSetOf<Int>()
-        when (template.seventh) {
-            SeventhType.MINOR -> intervals += 10
-            SeventhType.MAJOR -> intervals += 11
-            SeventhType.DIMINISHED -> intervals += 9
-            SeventhType.NONE -> Unit
+        if (extensionPenalty < ColorEnrichmentPenaltyFloor) {
+            when (template.seventh) {
+                SeventhType.MINOR -> intervals += 10
+                SeventhType.MAJOR -> intervals += 11
+                SeventhType.DIMINISHED -> intervals += 9
+                SeventhType.NONE -> Unit
+            }
+            if (template.sixth) intervals += 9
         }
-        if (template.sixth) intervals += 9
         for (degree in template.extensions) {
             when (degree) {
                 9 -> intervals += 2
