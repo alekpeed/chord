@@ -27,13 +27,12 @@ data class ChordTemplate(
     val prior: Float = 1f,
 ) {
     /**
-     * Weighted pitch-class vector with the triadic shell treated as the primary identity.
+     * Weighted pitch-class vector with structural chord tones given priority over upper color.
      *
-     * The previous model weighted root (1.15) and defining tone (1.10) almost equally, while the
-     * fifth and seventh both received the same generic upper-tone weight. That makes a subset triad
-     * such as F-A-C capable of outranking D-F-A-C and demoting the actual D root into an extension.
-     * Root, defining third/suspension, and fifth now establish the chord first; the seventh refines
-     * that established identity, and upper color is weaker still.
+     * Root and defining third/suspension carry the most identity weight. The fifth completes the
+     * triadic shell, while the named seventh is also strongly structural because it regularly
+     * distinguishes the actual chord quality (7, maj7, m7, m7b5, dim7). Ninths, elevenths,
+     * thirteenths, and altered upper tensions remain weaker so they cannot steal the root.
      */
     fun vector(root: Int): FloatArray {
         val out = FloatArray(12)
@@ -83,8 +82,8 @@ data class ChordTemplate(
         /** The fifth completes the structural triadic shell. */
         const val FifthWeight = 1.15f
 
-        /** A seventh refines an already-established triad; it does not choose a new root. */
-        const val SeventhWeight = 0.80f
+        /** The named seventh is a major structural identifier, not weak upper color. */
+        const val SeventhWeight = 1.20f
 
         /** Ninths, elevenths, thirteenths, and other upper color have the least root authority. */
         const val UpperColorWeight = 0.65f
