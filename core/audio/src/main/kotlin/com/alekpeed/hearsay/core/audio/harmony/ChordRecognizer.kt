@@ -25,11 +25,12 @@ data class ChordAlternate(val chord: Chord, val score: Float)
 data class KeyContext(val tonicPitchClass: Int, val isMinor: Boolean, val confidence: Float)
 
 /**
- * Reduces low-band influence before chord identity is decoded.
+ * Reduces low-band pitch influence for change evidence only.
  *
- * A moving bass note is not a new chord. A bass note that stays through neighboring analysis spans,
- * however, is useful evidence for a genuine harmonic root. [preservedPitchClass] lets that sustained
- * note keep most of its full-band evidence without ever giving a passing note an extra root vote.
+ * This must never feed chord-identity scoring. Once a spectrum has been folded into twelve pitch
+ * classes, a low D bass and every higher D in the harmony are the same bin. Attenuating that bin in
+ * the identity observation can turn Dm7 into its F-major subset or Cmaj7 into Em. The masked copy is
+ * useful only for asking whether the non-bass harmony moved enough to relax temporal continuity.
  */
 internal fun suppressBassInfluence(
     observed: FloatArray,
@@ -91,7 +92,10 @@ class ChordRecognizer(
             spans.map { (start, end) -> low.averageBetween(start, end) }
         }
         val persistentRoots = persistentBassRoots(bassObservations)
-        val observations = rawObservations.mapIndexed { index, observation ->
+
+        // Bass masking is deliberately limited to change gating. The raw harmonic chroma remains
+        // the source of chord identity and color so a real root is never subtracted from its chord.
+        val changeObservations = rawObservations.mapIndexed { index, observation ->
             suppressBassInfluence(
                 observed = observation,
                 bassObserved = bassObservations?.getOrNull(index),
@@ -100,12 +104,12 @@ class ChordRecognizer(
         }
 
         val priors = contextPriors(key)
-        val emissions = observations.mapIndexed { index, observation ->
+        val emissions = rawObservations.mapIndexed { index, observation ->
             emissionScores(observation, priors, persistentRoots.getOrNull(index))
         }
-        val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, observations))
+        val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, changeObservations))
         val refined = refineSpans(spans, path, chroma)
-        val stableChords = enrichHarmonicRuns(path, observations, preferFlats)
+        val stableChords = enrichHarmonicRuns(path, rawObservations, preferFlats)
 
         return refined.mapIndexed { index, (start, end) ->
             val state = path[index]
@@ -147,8 +151,8 @@ class ChordRecognizer(
     }
 
     /**
-     * Novelty can be excited by a bass note even after bass has been removed from the label vote.
-     * It may relax decoder stickiness only when the bass-suppressed harmony also moved.
+     * Novelty can be excited by a bass note even when bass is not allowed to determine the label.
+     * It may relax decoder stickiness only when the bass-reduced change observation also moved.
      */
     private fun gateChangeLikelihood(
         requested: FloatArray?,
@@ -239,8 +243,8 @@ class ChordRecognizer(
         if (key.isMinor) setOf(0, 2, 3, 5, 7, 8, 10) else setOf(0, 2, 4, 5, 7, 9, 11)
 
     /**
-     * Scores candidate identity from the bass-suppressed full-band observation. A sustained bass
-     * root gets one small tie-breaking multiplier. A passing bass note never gets this multiplier.
+     * Scores candidate identity from the unmasked harmonic observation. A sustained bass root gets
+     * one small tie-breaking multiplier; a passing bass note never receives that multiplier.
      */
     private fun emissionScores(
         observed: FloatArray,
