@@ -23,24 +23,46 @@ import com.alekpeed.hearsay.core.model.timeline.ChordEvent
 internal const val UnplayableChordBeats = 0.45f
 
 /**
+ * A short reading that introduces no pitch class outside a longer neighboring harmony is ambiguous
+ * by construction. For example, Em contains only E-G-B, all already present in Cmaj7. With no new
+ * harmonic evidence, temporal continuity wins rather than re-rooting the entire chord for one beat.
+ * This is intentionally much narrower than generic smoothing: a genuine quick chord that introduces
+ * even one new pitch class is untouched.
+ */
+private const val AmbiguousSubsetBeats = 1.15f
+
+/**
  * Removes regions too short to be harmony, giving their time to the region before them.
  *
- * Backwards on purpose. The chord that follows an artifact keeps its own start, so it still lands
- * where it lands against the bar — which is the concern that stopped the earlier absorption pass
- * from ever crossing roots, and it is a real one. Extending the previous region forwards costs
- * nothing: that chord was sounding through the artifact anyway, which is why the decoder had to
- * change its mind to produce one.
+ * It also removes one narrow class of longer ambiguity: a brief strict pitch-class subset of a
+ * neighboring harmony that lasts at least twice as long. That prevents Cmaj7 -> Em -> Cmaj7 style
+ * re-rooting without erasing passing diminished, altered, or other quick chords that contribute new
+ * harmonic information.
  */
 internal fun dropUnplayableRegions(events: List<ChordEvent>, beatMs: Long): List<ChordEvent> {
     if (events.size < 2) return events
     val floor = (beatMs * UnplayableChordBeats).toLong().coerceAtLeast(1)
+    val subsetFloor = (beatMs * AmbiguousSubsetBeats).toLong().coerceAtLeast(floor)
 
     val result = mutableListOf<ChordEvent>()
     var carriedStart: Long? = null
 
-    for (event in events) {
+    for ((index, event) in events.withIndex()) {
+        val previous = result.lastOrNull()
+        val next = events.getOrNull(index + 1)
+        val shortSubset = event.durationMs <= subsetFloor
+
+        if (shortSubset && isStrictSubsetOfLonger(event, previous)) {
+            result[result.lastIndex] = previous!!.copy(endMs = event.endMs)
+            continue
+        }
+
+        if (shortSubset && isStrictSubsetOfLonger(event, next)) {
+            carriedStart = carriedStart ?: event.startMs
+            continue
+        }
+
         if (event.durationMs < floor) {
-            val previous = result.lastOrNull()
             if (previous != null) {
                 result[result.lastIndex] = previous.copy(endMs = event.endMs)
             } else {
@@ -57,6 +79,16 @@ internal fun dropUnplayableRegions(events: List<ChordEvent>, beatMs: Long): List
 
     // Everything was an artifact. Better the original reading than an empty chart.
     return result.ifEmpty { events }
+}
+
+private fun isStrictSubsetOfLonger(candidate: ChordEvent, host: ChordEvent?): Boolean {
+    val candidateChord = candidate.chord ?: return false
+    val hostChord = host?.chord ?: return false
+    if (host.durationMs < candidate.durationMs * 2) return false
+
+    val candidatePitches = candidateChord.copy(bass = null).pitchClasses()
+    val hostPitches = hostChord.copy(bass = null).pitchClasses()
+    return candidatePitches.size < hostPitches.size && hostPitches.containsAll(candidatePitches)
 }
 
 /**
