@@ -92,6 +92,7 @@ class ChordRecognizer(
             spans.map { (start, end) -> low.averageBetween(start, end) }
         }
         val persistentRoots = persistentBassRoots(bassObservations)
+        val persistentSupport = persistentBassSupport(bassObservations)
 
         // Bass masking is deliberately limited to change gating. The raw harmonic chroma remains
         // the source of chord identity and color so a real root is never subtracted from its chord.
@@ -105,10 +106,11 @@ class ChordRecognizer(
 
         val priors = contextPriors(key)
         val emissions = rawObservations.mapIndexed { index, observation ->
-            emissionScores(observation, priors, persistentRoots.getOrNull(index))
+            emissionScores(observation, priors, persistentSupport.getOrNull(index))
         }
         val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, changeObservations))
-        val refined = refineSpans(spans, path, chroma)
+        alignDelayedTransitions(path, spans, changeLikelihood)
+        val refined = refineSpans(spans, path, chroma, changeLikelihood)
         val stableChords = enrichHarmonicRuns(path, rawObservations, preferFlats)
 
         return refined.mapIndexed { index, (start, end) ->
@@ -147,6 +149,31 @@ class ChordRecognizer(
             val agreesBefore = index > 0 && dominant[index - 1] == current
             val agreesAfter = index + 1 < dominant.size && dominant[index + 1] == current
             current.takeIf { agreesBefore || agreesAfter }
+        }
+    }
+
+    /**
+     * Keeps low-band support only when the same pitch class remains present in a neighboring span.
+     * A walking bass note that appears for one span therefore cannot steer harmonic identity, while
+     * a real root may remain useful even when another chord tone briefly measures louder.
+     */
+    private fun persistentBassSupport(bass: List<FloatArray>?): List<FloatArray> {
+        if (bass == null) return emptyList()
+        val relative = bass.map { vector ->
+            val peak = vector.maxOrNull() ?: 0f
+            if (peak < BassPresenceThreshold) {
+                FloatArray(12)
+            } else {
+                FloatArray(12) { pc -> (vector.getOrElse(pc) { 0f } / peak).coerceIn(0f, 1f) }
+            }
+        }
+        return relative.indices.map { index ->
+            FloatArray(12) { pc ->
+                val current = relative[index][pc]
+                val agreesBefore = index > 0 && relative[index - 1][pc] >= BassPersistenceFloor
+                val agreesAfter = index + 1 < relative.size && relative[index + 1][pc] >= BassPersistenceFloor
+                current.takeIf { it >= BassPersistenceFloor && (agreesBefore || agreesAfter) } ?: 0f
+            }
         }
     }
 
@@ -250,7 +277,7 @@ class ChordRecognizer(
     private fun emissionScores(
         observed: FloatArray,
         priors: FloatArray,
-        sustainedBassRoot: Int?,
+        persistentBassSupport: FloatArray?,
     ): FloatArray {
         val scores = FloatArray(ChordTemplates.StateCount)
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
@@ -263,22 +290,40 @@ class ChordRecognizer(
                 }
                 dot += observed[pc] * candidate.vector[pc] * weight
             }
-            val bassTieBreak = if (
-                sustainedBassRoot != null &&
-                candidate.root == sustainedBassRoot &&
-                hasSeventhSupport(candidate, observed)
-            ) {
-                SustainedSeventhRootBoost
-            } else {
-                1f
-            }
-            scores[index] = dot * priors[index] * bassTieBreak
+            scores[index] = dot * priors[index]
         }
+        applyPersistentBassRootTieBreak(scores, observed, persistentBassSupport)
 
         var energy = 0f
         for (value in observed) energy += value * value
         scores[ChordTemplates.NoChordIndex] = if (energy < 1e-4f) 1f else noChordThreshold
         return scores
+    }
+
+    private fun applyPersistentBassRootTieBreak(
+        scores: FloatArray,
+        observed: FloatArray,
+        persistentBassSupport: FloatArray?,
+    ) {
+        if (persistentBassSupport == null || persistentBassSupport.isEmpty()) return
+        val bestFullBand = ChordTemplates.Candidates.indices.maxOfOrNull { scores[it] } ?: return
+        if (bestFullBand <= 0f) return
+
+        var promotedIndex = -1
+        var promotedEvidence = 0f
+        for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
+            if (scores[index] < bestFullBand * BassTieBreakFloor) continue
+            val support = persistentBassSupport.getOrElse(candidate.root) { 0f }
+            if (support < BassRootSupportFloor || !hasSeventhSupport(candidate, observed)) continue
+            val evidence = support * scores[index]
+            if (evidence > promotedEvidence) {
+                promotedEvidence = evidence
+                promotedIndex = index
+            }
+        }
+        if (promotedIndex >= 0) {
+            scores[promotedIndex] = maxOf(scores[promotedIndex], bestFullBand * BassRootPreference)
+        }
     }
 
     private fun hasSeventhSupport(candidate: ChordTemplates.Candidate, observed: FloatArray): Boolean {
@@ -473,15 +518,44 @@ class ChordRecognizer(
     }
 
     /** Only structural identity changes receive their own transition time. */
+    private fun alignDelayedTransitions(
+        path: IntArray,
+        spans: List<Pair<Long, Long>>,
+        detectedChangeLikelihood: FloatArray?,
+    ) {
+        if (detectedChangeLikelihood == null) return
+        for (index in 1 until path.size) {
+            val previousIdentity = harmonicIdentity(path[index - 1])
+            val currentIdentity = harmonicIdentity(path[index])
+            if (previousIdentity == currentIdentity || previousIdentity == null || currentIdentity == null) continue
+            if ((detectedChangeLikelihood.getOrNull(index) ?: 0f) > 0f) continue
+
+            val detectedIndex = index - 1
+            if ((detectedChangeLikelihood.getOrNull(detectedIndex) ?: 0f) <= 0f) continue
+            val detectedMs = spans[detectedIndex].first
+            val delayedMs = spans[index].first
+            if (delayedMs - detectedMs !in 1..DetectedBoundaryAssociationMs) continue
+
+            // The audio changed at the previous boundary, but temporal continuity made the labeler
+            // wait one short span before committing. Move the new identity into that span instead
+            // of moving timestamps backward across an existing boundary.
+            path[detectedIndex] = path[index]
+        }
+    }
+
     private fun refineSpans(
         spans: List<Pair<Long, Long>>,
         path: IntArray,
         chroma: Chromagram,
+        detectedChangeLikelihood: FloatArray?,
     ): List<Pair<Long, Long>> {
         if (spans.size < 2) return spans
         val starts = LongArray(spans.size) { spans[it].first }
         for (index in 1 until spans.size) {
             if (harmonicIdentity(path[index]) == harmonicIdentity(path[index - 1])) continue
+            // A novelty peak is already an audio-measured boundary. Refining it again against
+            // uncertain chord templates can drag a correct transition hundreds of milliseconds.
+            if ((detectedChangeLikelihood?.getOrNull(index) ?: 0f) > 0f) continue
             starts[index] = bestSplitMs(
                 chroma = chroma,
                 fromMs = (spans[index - 1].first + spans[index - 1].second) / 2,
@@ -651,8 +725,12 @@ class ChordRecognizer(
     private companion object {
         const val KeyPriorStrength = 0.9f
         const val StructuralScaleStrength = 0.22f
-        const val SustainedSeventhRootBoost = 1.32f
+        const val BassTieBreakFloor = 0.86f
+        const val BassRootSupportFloor = 0.35f
+        const val BassRootPreference = 1.08f
+        const val BassPersistenceFloor = 0.25f
         const val SeventhSupportRatio = 0.35f
+        const val DetectedBoundaryAssociationMs = 350L
         const val ChangeRelief = 0.60f
         const val MinimumChangeCost = 0.15f
         const val FullChangeDistance = 0.12f
