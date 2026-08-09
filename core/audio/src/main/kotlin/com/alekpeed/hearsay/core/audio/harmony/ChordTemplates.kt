@@ -111,7 +111,20 @@ object ChordTemplates {
             "mMaj7", listOf(0, 3, 11, 7), ChordQuality.MINOR, SeventhType.MAJOR, prior = 0.66f),
     )
 
-    /** Every template at every root, precomputed once. */
+    /**
+     * Upper color is deliberately excluded from the Viterbi state space.
+     *
+     * A 9th, 13th, b9, or #11 can make the same structural harmony match more closely, but it must
+     * never be allowed to change the root decision. Letting F13 compete directly with Dm7, for
+     * example, makes the shared F-A-C-D pitch set look like a new F-root chord even when the audio
+     * is plainly Dm7. The recognizer now decodes root/quality/seventh/sixth/suspension first and
+     * adds sustained upper color to that stable identity afterward.
+     */
+    private val IdentityTemplates: List<ChordTemplate> = All.filter { template ->
+        template.extensions.isEmpty() && template.alterations.none { it.degree > 5 }
+    }
+
+    /** Every structural identity template at every root, precomputed once. */
     data class Candidate(
         val root: Int,
         val template: ChordTemplate,
@@ -140,16 +153,16 @@ object ChordTemplates {
 
     val Candidates: List<Candidate> = buildList {
         for (root in 0 until 12) {
-            for (template in All) {
+            for (template in IdentityTemplates) {
                 add(Candidate(root, template, template.vector(root)))
             }
         }
     }
 
-    /** Index of the no-chord state, appended after every real candidate. */
-    /** Sixths and sevenths: the intervals above the fifth that name a chord beyond its triad. */
+    /** Sixths and sevenths: intervals above the fifth that name a structural chord beyond its triad. */
     private val ExtensionIntervals = setOf(9, 10, 11)
 
+    /** Index of the no-chord state, appended after every real candidate. */
     val NoChordIndex: Int = Candidates.size
 
     val StateCount: Int = Candidates.size + 1
