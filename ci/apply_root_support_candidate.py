@@ -122,13 +122,13 @@ def main() -> None:
     text = replace_once(
         text,
         """        for (index in 1 until spans.size) {\n            if (harmonicIdentity(path[index]) == harmonicIdentity(path[index - 1])) continue\n            starts[index] = bestSplitMs(\n""",
-        """        for (index in 1 until spans.size) {\n            if (harmonicIdentity(path[index]) == harmonicIdentity(path[index - 1])) continue\n            // A novelty peak is already an audio-measured boundary. Refining it again against\n            // uncertain chord templates can drag a correct transition hundreds of milliseconds.\n            // Beat-only boundaries still use spectral refinement so anticipated changes remain free\n            // to land ahead of or behind the grid.\n            if ((detectedChangeLikelihood?.getOrNull(index) ?: 0f) > 0f) continue\n            starts[index] = bestSplitMs(\n""",
+        """        for (index in 1 until spans.size) {\n            if (harmonicIdentity(path[index]) == harmonicIdentity(path[index - 1])) continue\n\n            // Harmonic novelty is measured independently of chord naming. When the decoder needs\n            // one extra short span before committing to a new label, keep the nearby audio-measured\n            // boundary rather than refining the delayed label against two uncertain templates.\n            val fallbackMs = spans[index].first\n            var detectedAnchor: Long? = null\n            var detectedDistance = Long.MAX_VALUE\n            val firstCandidate = maxOf(0, index - 1)\n            val lastCandidate = minOf(spans.lastIndex, index + 1)\n            for (candidateIndex in firstCandidate..lastCandidate) {\n                if ((detectedChangeLikelihood?.getOrNull(candidateIndex) ?: 0f) <= 0f) continue\n                val candidateMs = spans[candidateIndex].first\n                val distance = kotlin.math.abs(candidateMs - fallbackMs)\n                if (distance <= DetectedBoundaryAssociationMs && distance < detectedDistance) {\n                    detectedAnchor = candidateMs\n                    detectedDistance = distance\n                }\n            }\n            if (detectedAnchor != null) {\n                starts[index] = detectedAnchor\n                continue\n            }\n\n            starts[index] = bestSplitMs(\n""",
     )
 
     text = replace_once(
         text,
         """        const val SustainedSeventhRootBoost = 1.32f\n        const val SeventhSupportRatio = 0.35f\n""",
-        """        const val BassTieBreakFloor = 0.86f\n        const val BassRootSupportFloor = 0.35f\n        const val BassRootPreference = 1.08f\n        const val BassPersistenceFloor = 0.25f\n        const val SeventhSupportRatio = 0.35f\n""",
+        """        const val BassTieBreakFloor = 0.86f\n        const val BassRootSupportFloor = 0.35f\n        const val BassRootPreference = 1.08f\n        const val BassPersistenceFloor = 0.25f\n        const val SeventhSupportRatio = 0.35f\n        const val DetectedBoundaryAssociationMs = 350L\n""",
     )
 
     PATH.write_text(text if text.endswith("\n") else text + "\n")
