@@ -22,26 +22,20 @@ data class RecognizedChord(
 
 data class ChordAlternate(val chord: Chord, val score: Float)
 
-/**
- * The key an analysis settled on, used to break ties between chords that sound alike.
- *
- * @param confidence how much the key estimate is trusted; a weak estimate barely tilts anything.
- */
 data class KeyContext(val tonicPitchClass: Int, val isMinor: Boolean, val confidence: Float)
 
 /**
- * Reduces the pitch-class energy that can be attributed to the low-band bass track.
+ * Reduces low-band influence before chord identity is decoded.
  *
- * Bass is useful after a chord is known: it tells us whether to write C/E, and it can be shown as a
- * moving line of its own. It is dangerous as a chord-identity vote. A walking A underneath an
- * unchanged C-major sonority must not turn the whole chord into Am just because Am is a close
- * pitch-class match. The strongest bass pitch is therefore retained, but at only a fraction of its
- * original influence. Other low-band pitch classes are attenuated in proportion to their strength.
- *
- * The transform is deliberately soft rather than a hard notch. A rootless voicing can still use the
- * bass as evidence, but the bass cannot dominate the upper harmonic structure.
+ * A moving bass note is not a new chord. A bass note that stays through neighboring analysis spans,
+ * however, is useful evidence for a genuine harmonic root. [preservedPitchClass] lets that sustained
+ * note keep most of its full-band evidence without ever giving it an extra root bonus.
  */
-internal fun suppressBassInfluence(observed: FloatArray, bassObserved: FloatArray?): FloatArray {
+internal fun suppressBassInfluence(
+    observed: FloatArray,
+    bassObserved: FloatArray?,
+    preservedPitchClass: Int? = null,
+): FloatArray {
     if (bassObserved == null || bassObserved.isEmpty()) return observed
     val peak = bassObserved.maxOrNull() ?: return observed
     if (peak < BassMaskPresenceThreshold) return observed
@@ -49,27 +43,28 @@ internal fun suppressBassInfluence(observed: FloatArray, bassObserved: FloatArra
     val out = observed.copyOf()
     for (pc in out.indices) {
         val relativeBass = (bassObserved.getOrElse(pc) { 0f } / peak).coerceIn(0f, 1f)
-        val attenuation = 1f - BassMaskMaxSuppression * relativeBass * relativeBass
+        val maximumSuppression = if (pc == preservedPitchClass) {
+            PersistentBassSuppression
+        } else {
+            BassMaskMaxSuppression
+        }
+        val attenuation = 1f - maximumSuppression * relativeBass * relativeBass
         out[pc] *= attenuation
     }
     return Chromagram.normalize(out)
 }
 
 private const val BassMaskMaxSuppression = 0.65f
+private const val PersistentBassSuppression = 0.15f
 private const val BassMaskPresenceThreshold = 0.25f
 
 /**
- * Beat/change-synchronous chord recognition.
+ * Chord recognition whose state represents harmonic identity, not every spectral rearrangement.
  *
- * The decoder answers two different questions separately:
- *
- * 1. What is the stable harmonic identity (root, quality, seventh/suspension)?
- * 2. What color is sounding on top of that identity (9, b9, #11, 13, etc.)?
- *
- * Bass is not allowed to answer question 1 by itself. It is tracked separately and can become a
- * slash bass after the harmony is known. Color is also prevented from becoming a fake chord change:
- * C7 -> C9 -> C7 inside one sustained dominant harmony is one harmonic region whose richest stable
- * color is named from the whole region.
+ * Root/quality are decoded first. Bass and upper extensions are attached only after that identity is
+ * stable. This keeps a walking line from becoming a procession of new roots while still allowing a
+ * sustained inversion to be written as a slash chord and a sustained tension to be written as b9,
+ * #11, 13, and so on.
  */
 class ChordRecognizer(
     private val selfTransitionBonus: Float = 1.5f,
@@ -80,12 +75,6 @@ class ChordRecognizer(
     private val extensionPenalty: Float = 1f,
 ) {
 
-    /**
-     * @param beatTimesMs boundaries of each analysis span; N boundaries yield N-1 spans.
-     * @param bassChroma low-band chroma. It is suppressed for chord identity and retained for bass/slash naming.
-     * @param key the estimated key, which decides between chords the chroma cannot separate.
-     * @param changeLikelihood per span, how strongly the audio says the harmony turned over at its start.
-     */
     fun recognize(
         chroma: Chromagram,
         beatTimesMs: List<Long>,
@@ -101,14 +90,18 @@ class ChordRecognizer(
         val bassObservations = bassChroma?.let { low ->
             spans.map { (start, end) -> low.averageBetween(start, end) }
         }
+        val persistentRoots = persistentBassRoots(bassObservations)
         val observations = rawObservations.mapIndexed { index, observation ->
-            suppressBassInfluence(observation, bassObservations?.getOrNull(index))
+            suppressBassInfluence(
+                observed = observation,
+                bassObserved = bassObservations?.getOrNull(index),
+                preservedPitchClass = persistentRoots.getOrNull(index),
+            )
         }
 
         val priors = contextPriors(key)
-        val emissions = observations.map { observation -> emissionScores(observation, priors) }
-        val effectiveChangeLikelihood = gateChangeLikelihood(changeLikelihood, observations)
-        val path = viterbi(emissions, effectiveChangeLikelihood)
+        val emissions = observations.map { emissionScores(it, priors) }
+        val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, observations))
         val refined = refineSpans(spans, path, chroma)
         val stableChords = enrichHarmonicRuns(path, observations, preferFlats)
 
@@ -116,17 +109,18 @@ class ChordRecognizer(
             val state = path[index]
             val scores = emissions[index]
             val bassVector = bassChroma?.averageBetween(start, end)
-            val bass = bassVector?.let { dominantPitchClass(it) }
+            val bass = bassVector?.let(::dominantPitchClass)
             val stableChord = stableChords[index]
 
             if (state == ChordTemplates.NoChordIndex || stableChord == null) {
                 RecognizedChord(start, end, null, confidenceOf(scores, state), emptyList(), bass)
             } else {
-                val namedBass = inversionBass(stableChord, bassVector, preferFlats)
                 RecognizedChord(
                     startMs = start,
                     endMs = end,
-                    chord = stableChord.copy(bass = namedBass).normalized(),
+                    chord = stableChord.copy(
+                        bass = inversionBass(stableChord, bassVector, preferFlats),
+                    ).normalized(),
                     confidence = confidenceOf(scores, state),
                     alternates = alternatesOf(scores, state, preferFlats),
                     bassPitchClass = bass,
@@ -136,12 +130,23 @@ class ChordRecognizer(
     }
 
     /**
-     * A generic novelty detector can fire on bass motion. Before its result is allowed to relax the
-     * decoder, require corroborating movement in the bass-suppressed harmonic observations.
-     *
-     * This does not quantize changes to the beat. It only decides whether a proposed off-grid/beat
-     * boundary deserves to make chord switching easier; the boundary itself remains at its measured
-     * time and the later refinement still places a genuine change at the audio transition.
+     * A root has to persist into a neighboring analysis span before bass is allowed to keep its full
+     * harmonic weight. A walking line that changes every span therefore remains bass-only evidence.
+     */
+    private fun persistentBassRoots(bass: List<FloatArray>?): List<Int?> {
+        if (bass == null) return emptyList()
+        val dominant = bass.map(::dominantPitchClass)
+        return dominant.indices.map { index ->
+            val current = dominant[index] ?: return@map null
+            val agreesBefore = index > 0 && dominant[index - 1] == current
+            val agreesAfter = index + 1 < dominant.size && dominant[index + 1] == current
+            current.takeIf { agreesBefore || agreesAfter }
+        }
+    }
+
+    /**
+     * Novelty can be excited by a bass note even after bass has been removed from the label vote.
+     * It may relax decoder stickiness only when the bass-suppressed harmony also moved.
      */
     private fun gateChangeLikelihood(
         requested: FloatArray?,
@@ -153,76 +158,94 @@ class ChordRecognizer(
             var dot = 0f
             for (pc in 0 until 12) dot += observations[index - 1][pc] * observations[index][pc]
             val harmonicDistance = (1f - dot).coerceIn(0f, 1f)
-            val corroboration = (harmonicDistance / FullChangeDistance).coerceIn(0f, 1f)
-            out[index] *= corroboration
+            out[index] *= (harmonicDistance / FullChangeDistance).coerceIn(0f, 1f)
         }
         return out
     }
 
-    /**
-     * Names an inversion only after the chord identity is known.
-     *
-     * A non-chord walking tone remains available in [RecognizedChord.bassPitchClass] and in the
-     * dedicated bass track, but it does not rewrite the chord and it is not forced into a slash name.
-     */
+    /** Bass is named only after harmonic identity is settled. */
     private fun inversionBass(
         chord: Chord,
         bassVector: FloatArray?,
         preferFlats: Boolean,
     ): NoteSpelling? {
         if (bassVector == null || !slashChords) return null
-        val chordTones = chord.copy(bass = null).pitchClasses()
+        val best = dominantPitchClass(bassVector) ?: return null
+        if (best == chord.root.pitchClass) return null
+        if (best !in chord.copy(bass = null).pitchClasses()) return null
 
-        var best = -1
-        var bestValue = 0f
-        for (pc in bassVector.indices) {
-            if (bassVector[pc] > bestValue) {
-                bestValue = bassVector[pc]
-                best = pc
-            }
-        }
-        if (best < 0 || best == chord.root.pitchClass || best !in chordTones) return null
-
+        val bestValue = bassVector[best]
         val rootEnergy = bassVector.getOrElse(chord.root.pitchClass) { 0f }
         if (bestValue < BassDominanceRatio * max(rootEnergy, 1e-6f)) return null
-        if (bestValue < BassPresenceThreshold) return null
-
         return NoteSpelling.fromPitchClass(best, preferFlats)
     }
 
-    /** How likely each chord is before hearing anything, given the estimated key. */
     private fun contextPriors(key: KeyContext?): FloatArray {
         val priors = FloatArray(ChordTemplates.Candidates.size)
-        val scale = key?.let { scaleOf(it) }
+        val scale = key?.let(::scaleOf)
         val strength = ((key?.confidence ?: 0f).coerceIn(0f, 1f)) * KeyPriorStrength
 
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
             var prior = candidate.template.prior
-            if (scale != null) {
+            if (scale != null && key != null) {
                 val degree = Math.floorMod(candidate.root - key.tonicPitchClass, 12)
-                val fit = when {
+                val rootFit = when {
                     degree == 0 -> TonicFit
                     degree == 7 || degree == 5 -> DominantFit
-                    scale.contains(degree) -> DiatonicFit
+                    degree in scale -> DiatonicFit
                     else -> ChromaticFit
                 }
-                prior *= 1f + strength * (fit - 1f)
+                prior *= 1f + strength * (rootFit - 1f)
+                prior *= structuralScalePrior(candidate, key, scale, strength)
             }
             priors[index] = prior
         }
         return priors
     }
 
+    /**
+     * A close spectral tie is broken in favor of the structural shell that fits the estimated key.
+     * This is intentionally mild: borrowed/altered harmony can still win on audio evidence.
+     */
+    private fun structuralScalePrior(
+        candidate: ChordTemplates.Candidate,
+        key: KeyContext,
+        scale: Set<Int>,
+        strength: Float,
+    ): Float {
+        val colorIntervals = mutableSetOf<Int>()
+        for (degree in candidate.template.extensions) {
+            when (degree) {
+                9 -> colorIntervals += 2
+                11 -> colorIntervals += 5
+                13 -> colorIntervals += 9
+            }
+        }
+        for (alteration in candidate.template.alterations) {
+            if (alteration.degree > 5) colorIntervals += alteration.semitonesFromRoot
+        }
+        val structuralIntervals = candidate.template.intervals.filterNot { it in colorIntervals }
+        if (structuralIntervals.isEmpty()) return 1f
+        val inKey = structuralIntervals.count { interval ->
+            Math.floorMod(candidate.root + interval - key.tonicPitchClass, 12) in scale
+        }
+        val fraction = inKey.toFloat() / structuralIntervals.size
+        return 1f + strength * StructuralScaleStrength * (fraction - 0.75f)
+    }
+
     private fun scaleOf(key: KeyContext): Set<Int> =
         if (key.isMinor) setOf(0, 2, 3, 5, 7, 8, 10) else setOf(0, 2, 4, 5, 7, 9, 11)
 
-    /** Cosine similarity against every template, after bass influence has already been reduced. */
     private fun emissionScores(observed: FloatArray, priors: FloatArray): FloatArray {
         val scores = FloatArray(ChordTemplates.StateCount)
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
             var dot = 0f
             for (pc in 0 until 12) {
-                val weight = if (extensionPenalty != 1f && isColorTone(candidate, pc)) extensionPenalty else 1f
+                val weight = if (extensionPenalty != 1f && isColorTone(candidate, pc)) {
+                    extensionPenalty
+                } else {
+                    1f
+                }
                 dot += observed[pc] * candidate.vector[pc] * weight
             }
             scores[index] = dot * priors[index]
@@ -234,7 +257,6 @@ class ChordRecognizer(
         return scores
     }
 
-    /** Whether this pitch class is harmonic color rather than the chord's structural shell. */
     private fun isColorTone(candidate: ChordTemplates.Candidate, pitchClass: Int): Boolean {
         val template = candidate.template
         val intervals = mutableSetOf<Int>()
@@ -259,12 +281,8 @@ class ChordRecognizer(
     }
 
     /**
-     * Chord color is named from the whole stable harmonic run, not independently on every beat.
-     *
-     * This is what lets the chart be both stable and colorful. A ninth that is genuinely present
-     * through a C7 region can produce C9/C7b9/C7#11/etc.; a one-frame melody note cannot create a
-     * new chord row, and changing bass notes cannot change the root because bass was already reduced
-     * before the path was decoded.
+     * A stable harmonic identity gets one aggregate color reading for its whole run. Color can make
+     * C7 become C7b9#11, but it cannot create a new row by itself.
      */
     private fun enrichHarmonicRuns(
         path: IntArray,
@@ -304,7 +322,6 @@ class ChordRecognizer(
         return out
     }
 
-    /** Structural identity deliberately ignores upper extensions and altered tensions. */
     private data class HarmonicIdentity(
         val root: Int,
         val quality: ChordQuality,
@@ -327,12 +344,6 @@ class ChordRecognizer(
         )
     }
 
-    /**
-     * Adds stable upper color without letting that color create a separate harmonic identity.
-     *
-     * The work is split by chord family so the decisions stay independently testable: seventh
-     * chords can carry altered 9/11/13 color, while triads use add9/add11 notation.
-     */
     private fun addStableColor(base: Chord, observed: FloatArray): Chord {
         val structural = base.copy(
             extensions = emptySet(),
@@ -371,27 +382,36 @@ class ChordRecognizer(
             }
         }
 
-        val ninthOptions = buildList<Pair<Int, Any>> {
-            add(1 to Alteration.FLAT_NINE)
-            add(2 to 9)
-            if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.SUSPENDED) {
-                add(3 to Alteration.SHARP_NINE)
-            }
-        }
-        addChoice(choose(ninthOptions))
+        addChoice(
+            choose(
+                buildList {
+                    add(1 to Alteration.FLAT_NINE)
+                    add(2 to 9)
+                    if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.SUSPENDED) {
+                        add(3 to Alteration.SHARP_NINE)
+                    }
+                },
+            ),
+        )
 
-        val eleventhOptions = buildList<Pair<Int, Any>> {
-            if (base.quality != ChordQuality.SUSPENDED || 4 !in base.suspensions) add(5 to 11)
-            if (base.quality != ChordQuality.DIMINISHED) add(6 to Alteration.SHARP_ELEVEN)
-        }
-        addChoice(choose(eleventhOptions))
+        addChoice(
+            choose(
+                buildList {
+                    if (base.quality != ChordQuality.SUSPENDED || 4 !in base.suspensions) add(5 to 11)
+                    if (base.quality != ChordQuality.DIMINISHED) add(6 to Alteration.SHARP_ELEVEN)
+                },
+            ),
+        )
 
         if (!base.sixth) {
-            val thirteenthOptions = buildList<Pair<Int, Any>> {
-                if (base.quality != ChordQuality.AUGMENTED) add(8 to Alteration.FLAT_THIRTEEN)
-                add(9 to 13)
-            }
-            addChoice(choose(thirteenthOptions))
+            addChoice(
+                choose(
+                    buildList {
+                        if (base.quality != ChordQuality.AUGMENTED) add(8 to Alteration.FLAT_THIRTEEN)
+                        add(9 to 13)
+                    },
+                ),
+            )
         }
 
         return base.copy(extensions = extensions, alterations = alterations).normalized()
@@ -406,7 +426,7 @@ class ChordRecognizer(
         return base.copy(additions = additions).normalized()
     }
 
-    /** Moves each true harmonic-identity change to where the audio changes, not to the nearest beat. */
+    /** Only structural identity changes receive their own transition time. */
     private fun refineSpans(
         spans: List<Pair<Long, Long>>,
         path: IntArray,
@@ -471,14 +491,8 @@ class ChordRecognizer(
     }
 
     /**
-     * Finds the best progression while guaranteeing that changing labels is never rewarded merely
-     * for sharing notes.
-     *
-     * The old raw shared-note bonus could exceed the self-transition bonus (four shared notes made
-     * 0.4 * 4 = 1.6 versus 1.5 for staying). Jaccard normalization fixed that arithmetic but made
-     * legitimate close-voiced changes too expensive. The correct invariant is simpler: relatedness
-     * may make a transition cheap, but it must remain at least [MinimumChangeCost] worse than staying
-     * unless the emissions themselves support the new harmony.
+     * Related chords may be cheaper to move between, but a transition is never rewarded more than
+     * staying. Genuine changes still win when their emissions and change evidence support them.
      */
     private fun viterbi(emissions: List<FloatArray>, changeLikelihood: FloatArray?): IntArray {
         val states = ChordTemplates.StateCount
@@ -525,9 +539,8 @@ class ChordRecognizer(
         return path
     }
 
-    /** Raw shared pitch classes are useful as a transition similarity once their bonus is capped. */
     private fun relatednessMatrix(): Array<FloatArray> {
-        if (cachedRelatedness != null) return cachedRelatedness!!
+        cachedRelatedness?.let { return it }
         val states = ChordTemplates.StateCount
         val matrix = Array(states) { FloatArray(states) }
         val pitchSets = ChordTemplates.Candidates.map { candidate ->
@@ -535,10 +548,10 @@ class ChordRecognizer(
         }
         for (from in 0 until states) {
             for (to in 0 until states) {
-                if (from == ChordTemplates.NoChordIndex || to == ChordTemplates.NoChordIndex) {
-                    matrix[from][to] = 0f
+                matrix[from][to] = if (from == ChordTemplates.NoChordIndex || to == ChordTemplates.NoChordIndex) {
+                    0f
                 } else {
-                    matrix[from][to] = pitchSets[from].intersect(pitchSets[to]).size.toFloat()
+                    pitchSets[from].intersect(pitchSets[to]).size.toFloat()
                 }
             }
         }
@@ -582,6 +595,7 @@ class ChordRecognizer(
 
     private companion object {
         const val KeyPriorStrength = 0.9f
+        const val StructuralScaleStrength = 0.22f
         const val ChangeRelief = 0.60f
         const val MinimumChangeCost = 0.15f
         const val FullChangeDistance = 0.12f
@@ -595,20 +609,15 @@ class ChordRecognizer(
         const val BassPresenceThreshold = 0.25f
         const val BassDominanceRatio = 1.5f
 
-        /** Standard and full detail both keep stable upper color; simple remains a lead-sheet view. */
         const val ColorEnrichmentPenaltyFloor = 0.90f
-        const val ColorAbsoluteFloor = 0.18f
-        const val ColorRelativeFloor = 0.42f
+        const val ColorAbsoluteFloor = 0.20f
+        const val ColorRelativeFloor = 0.55f
 
         @Volatile
         var cachedRelatedness: Array<FloatArray>? = null
     }
 }
 
-/**
- * How much the harmony changes from one span to the next, used to find bar lines.
- * Returned per span so it lines up with the beat list the caller already has.
- */
 fun chordChangeStrength(chroma: Chromagram, beatTimesMs: List<Long>): FloatArray {
     if (beatTimesMs.size < 2) return FloatArray(0)
     val vectors = beatTimesMs.zipWithNext().map { (start, end) -> chroma.averageBetween(start, end) }
@@ -622,7 +631,6 @@ fun chordChangeStrength(chroma: Chromagram, beatTimesMs: List<Long>): FloatArray
     return out
 }
 
-/** Global key by correlating the average chroma with the Krumhansl-Kessler profiles. */
 object KeyEstimator {
 
     private val MajorProfile = floatArrayOf(
