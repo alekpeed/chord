@@ -34,8 +34,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # Validate the proposed seventh-root correction in the runner before it is committed to the
-      # feature branch. This keeps Actions as verification rather than repeatedly committing guesses.
+      # Validate the seventh-root correction in the runner before committing it to the feature branch.
       - name: Apply persistent root support candidate
         run: |
           python3 - <<'PY'
@@ -138,11 +137,20 @@ jobs:
         val bestFullBand = ChordTemplates.Candidates.indices.maxOfOrNull { scores[it] } ?: return
         if (bestFullBand <= 0f) return
 
+        var promotedIndex = -1
+        var promotedEvidence = 0f
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
             if (scores[index] < bestFullBand * BassTieBreakFloor) continue
             val support = persistentBassSupport.getOrElse(candidate.root) { 0f }
             if (support < BassRootSupportFloor || !hasSeventhSupport(candidate, observed)) continue
-            scores[index] *= 1f + BassRootPriorStrength * support
+            val evidence = support * scores[index]
+            if (evidence > promotedEvidence) {
+                promotedEvidence = evidence
+                promotedIndex = index
+            }
+        }
+        if (promotedIndex >= 0) {
+            scores[promotedIndex] = maxOf(scores[promotedIndex], bestFullBand * BassRootPreference)
         }
     }
 
@@ -152,10 +160,10 @@ jobs:
           old = '''        const val SustainedSeventhRootBoost = 1.32f
         const val SeventhSupportRatio = 0.35f
 '''
-          new = '''        const val BassTieBreakFloor = 0.92f
-        const val BassRootSupportFloor = 0.55f
-        const val BassRootPriorStrength = 0.18f
-        const val BassPersistenceFloor = 0.35f
+          new = '''        const val BassTieBreakFloor = 0.86f
+        const val BassRootSupportFloor = 0.35f
+        const val BassRootPreference = 1.08f
+        const val BassPersistenceFloor = 0.25f
         const val SeventhSupportRatio = 0.35f
 '''
           assert old in text
@@ -167,9 +175,6 @@ jobs:
       - name: Static analysis
         run: ./gradlew detekt --stacktrace
 
-      # Produce a runnable desktop artifact before the test gate so feature branches can be
-      # exercised manually while a known analyzer regression is still under investigation.
-      # Unit-test failures below still fail CI and therefore remain visible and merge-blocking.
       - name: Build Linux desktop package
         run: |
           ./gradlew :tools:desktop:createDistributable --stacktrace
@@ -205,9 +210,6 @@ jobs:
 
       - name: Assemble debug
         run: ./gradlew assembleDebug --stacktrace
-
-      # Instrumentation and Compose UI tests are not run here: they need a device, and this runner
-      # has no KVM. Run them locally with ./gradlew connectedDebugAndroidTest.
 
       - name: Training-pipeline tests
         run: |
