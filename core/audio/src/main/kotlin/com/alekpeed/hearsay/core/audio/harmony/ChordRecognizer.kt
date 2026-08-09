@@ -29,7 +29,7 @@ data class KeyContext(val tonicPitchClass: Int, val isMinor: Boolean, val confid
  *
  * A moving bass note is not a new chord. A bass note that stays through neighboring analysis spans,
  * however, is useful evidence for a genuine harmonic root. [preservedPitchClass] lets that sustained
- * note keep most of its full-band evidence without ever giving it an extra root bonus.
+ * note keep most of its full-band evidence without ever giving a passing note an extra root vote.
  */
 internal fun suppressBassInfluence(
     observed: FloatArray,
@@ -100,7 +100,9 @@ class ChordRecognizer(
         }
 
         val priors = contextPriors(key)
-        val emissions = observations.map { emissionScores(it, priors) }
+        val emissions = observations.mapIndexed { index, observation ->
+            emissionScores(observation, priors, persistentRoots.getOrNull(index))
+        }
         val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, observations))
         val refined = refineSpans(spans, path, chroma)
         val stableChords = enrichHarmonicRuns(path, observations, preferFlats)
@@ -130,8 +132,8 @@ class ChordRecognizer(
     }
 
     /**
-     * A root has to persist into a neighboring analysis span before bass is allowed to keep its full
-     * harmonic weight. A walking line that changes every span therefore remains bass-only evidence.
+     * A root has to persist into a neighboring analysis span before bass is allowed to influence root
+     * identity. A walking line that changes every span therefore remains bass-only evidence.
      */
     private fun persistentBassRoots(bass: List<FloatArray>?): List<Int?> {
         if (bass == null) return emptyList()
@@ -236,7 +238,15 @@ class ChordRecognizer(
     private fun scaleOf(key: KeyContext): Set<Int> =
         if (key.isMinor) setOf(0, 2, 3, 5, 7, 8, 10) else setOf(0, 2, 4, 5, 7, 9, 11)
 
-    private fun emissionScores(observed: FloatArray, priors: FloatArray): FloatArray {
+    /**
+     * Scores candidate identity from the bass-suppressed full-band observation. A sustained bass
+     * root gets one small tie-breaking multiplier. A passing bass note never gets this multiplier.
+     */
+    private fun emissionScores(
+        observed: FloatArray,
+        priors: FloatArray,
+        sustainedBassRoot: Int?,
+    ): FloatArray {
         val scores = FloatArray(ChordTemplates.StateCount)
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
             var dot = 0f
@@ -248,7 +258,12 @@ class ChordRecognizer(
                 }
                 dot += observed[pc] * candidate.vector[pc] * weight
             }
-            scores[index] = dot * priors[index]
+            val bassTieBreak = if (sustainedBassRoot != null && candidate.root == sustainedBassRoot) {
+                SustainedBassRootBoost
+            } else {
+                1f
+            }
+            scores[index] = dot * priors[index] * bassTieBreak
         }
 
         var energy = 0f
@@ -596,6 +611,7 @@ class ChordRecognizer(
     private companion object {
         const val KeyPriorStrength = 0.9f
         const val StructuralScaleStrength = 0.22f
+        const val SustainedBassRootBoost = 1.18f
         const val ChangeRelief = 0.60f
         const val MinimumChangeCost = 0.15f
         const val FullChangeDistance = 0.12f
