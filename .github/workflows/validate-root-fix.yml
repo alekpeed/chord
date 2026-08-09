@@ -1,10 +1,7 @@
 name: Validate root support fix
 
 on:
-  push:
-    branches: [chatgpt/harmony-accuracy]
-    paths:
-      - '.github/workflows/validate-root-fix.yml'
+  pull_request:
 
 permissions:
   contents: write
@@ -30,6 +27,8 @@ jobs:
 
           path = Path('core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/harmony/ChordRecognizer.kt')
           text = path.read_text()
+          if 'private fun persistentBassSupport(' in text:
+              raise SystemExit(0)
 
           old = '''        val persistentRoots = persistentBassRoots(bassObservations)
 
@@ -162,6 +161,9 @@ jobs:
       - name: Commit validated fix
         if: success()
         run: |
+          if git diff --quiet; then
+            exit 0
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/harmony/ChordRecognizer.kt
