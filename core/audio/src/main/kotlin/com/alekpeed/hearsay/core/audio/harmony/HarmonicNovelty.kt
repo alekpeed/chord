@@ -5,21 +5,16 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * Where the harmony changes — without deciding what it changed to.
+ * Where the harmony changes, without deciding what it changed to.
  *
- * This exists because naming and timing are different problems and the harder one was gating the
- * easier one. A chord boundary used to exist only where the decoder changed its mind about the
- * label, so a change the recognizer was too unsure to commit to produced no boundary at all and
- * the highlight simply did not move. On dense material that is most of them.
+ * Timing and naming are separate problems. A detected harmonic turn is allowed to create an
+ * off-grid boundary even when the labeler is uncertain, so anticipated chords can move at the
+ * moment they are actually played rather than at the nearest beat.
  *
- * Detecting *that* the harmony moved needs no labels. Comparing the chroma just before a moment
- * with the chroma just after it says plainly whether the pitch content turned over, and it says so
- * whether the chord is a clean triad or something the templates cannot name.
- *
- * This is the diagonal of a self-similarity matrix under a checkerboard kernel, evaluated only
- * where it is read. The full matrix would be the textbook construction and also quadratic: at a
- * 23 ms hop a seven-minute recording is around eighteen thousand frames, so the matrix alone is
- * over a gigabyte, on a device where memory exhaustion has already been a real failure.
+ * Low-band bass can optionally be supplied. Its pitch-class influence is softly reduced before
+ * novelty is measured, because a walking bass line is not by itself a harmonic change. The bass is
+ * not deleted: enough remains that a real root change can still contribute when the upper harmony
+ * also moves.
  */
 object HarmonicNovelty {
 
@@ -32,26 +27,37 @@ object HarmonicNovelty {
     /**
      * Per-frame novelty in `0..1`: how unlike the near future the recent past is.
      *
-     * Running sums, so the window either side costs the same whatever its width.
+     * Running sums keep the comparison linear in recording length. A bass-suppressed chromagram is
+     * only twelve floats per frame, so materializing that small feature costs little and avoids
+     * repeatedly recalculating the same suppression while the windows slide.
      */
-    fun of(chroma: Chromagram, windowSeconds: Double = DefaultWindowSeconds): FloatArray {
-        val frames = chroma.frames
-        val count = frames.size
+    fun of(
+        chroma: Chromagram,
+        windowSeconds: Double = DefaultWindowSeconds,
+        bassChroma: Chromagram? = null,
+    ): FloatArray {
+        val original = chroma.frames
+        val count = original.size
         val out = FloatArray(count)
         if (count < 4 || chroma.hopSeconds <= 0.0) return out
+
+        val frames = if (bassChroma == null) {
+            original
+        } else {
+            Array(count) { index ->
+                suppressBassInfluence(original[index], bassChroma.frames.getOrNull(index))
+            }
+        }
 
         val window = (windowSeconds / chroma.hopSeconds).toInt().coerceIn(2, max(2, count / 2))
         val before = FloatArray(Chromagram.PitchClasses)
         val after = FloatArray(Chromagram.PitchClasses)
 
-        // Seeded for frame `window`: the two windows meeting there, then slid one frame at a time.
         for (frame in 0 until window) add(before, frames[frame])
         for (frame in window until minOf(count, window * 2)) add(after, frames[frame])
 
         for (center in window until count - window) {
             out[center] = 1f - cosine(before, after)
-            // Slide: the frame at the seam moves from the future into the past, and one more
-            // frame joins the future at its far end.
             add(before, frames[center])
             subtract(before, frames[center - window])
             subtract(after, frames[center])
@@ -61,12 +67,7 @@ object HarmonicNovelty {
     }
 
     /**
-     * Frame indices where novelty peaks, thresholded against its own local median.
-     *
-     * An absolute threshold cannot work: novelty is far higher throughout a busy arrangement than
-     * anywhere in a sparse one, and a number that finds changes in the first invents them in the
-     * second. The comparison is local for the same reason a chorus should not raise the bar for
-     * the verse next to it.
+     * Frame indices where novelty peaks, thresholded against the local median.
      */
     fun peaks(
         novelty: FloatArray,
@@ -93,8 +94,6 @@ object HarmonicNovelty {
             if (value > slice[counted / 2] + delta) candidates += index
         }
 
-        // Strongest first, so when two peaks are too close together the weaker one is the one that
-        // loses — rather than whichever happened to come first in time.
         val kept = mutableListOf<Int>()
         for (candidate in candidates.sortedByDescending { novelty[it] }) {
             if (kept.none { kotlin.math.abs(it - candidate) < separation }) kept += candidate
