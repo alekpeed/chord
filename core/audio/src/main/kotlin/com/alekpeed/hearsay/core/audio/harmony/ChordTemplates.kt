@@ -67,15 +67,20 @@ object ChordTemplates {
     /**
      * Interval lists are ordered root, then the tone that defines the quality (the third, or the
      * fourth in a suspension), then everything else — which is what the weighting above reads.
+     *
+     * Sevenths carry a modest structural prior over sixth chords because a sixth chord and the
+     * relative minor seventh can contain exactly the same pitch classes. In that exact tie the
+     * richer seventh identity is the safer default; sustained bass and temporal context can still
+     * establish a genuine sixth chord when the recording supports it.
      */
     val All: List<ChordTemplate> = listOf(
-        ChordTemplate("", listOf(0, 4, 7), ChordQuality.MAJOR, SeventhType.NONE, prior = 1.1f),
-        ChordTemplate("m", listOf(0, 3, 7), ChordQuality.MINOR, SeventhType.NONE, prior = 1.08f),
-        ChordTemplate("7", listOf(0, 4, 10, 7), ChordQuality.MAJOR, SeventhType.MINOR, prior = 1.06f),
-        ChordTemplate("m7", listOf(0, 3, 10, 7), ChordQuality.MINOR, SeventhType.MINOR, prior = 1.06f),
-        ChordTemplate("maj7", listOf(0, 4, 11, 7), ChordQuality.MAJOR, SeventhType.MAJOR, prior = 1.05f),
-        ChordTemplate("6", listOf(0, 4, 9, 7), ChordQuality.MAJOR, SeventhType.NONE, sixth = true, prior = 0.95f),
-        ChordTemplate("m6", listOf(0, 3, 9, 7), ChordQuality.MINOR, SeventhType.NONE, sixth = true, prior = 0.9f),
+        ChordTemplate("", listOf(0, 4, 7), ChordQuality.MAJOR, SeventhType.NONE, prior = 1.08f),
+        ChordTemplate("m", listOf(0, 3, 7), ChordQuality.MINOR, SeventhType.NONE, prior = 1.06f),
+        ChordTemplate("7", listOf(0, 4, 10, 7), ChordQuality.MAJOR, SeventhType.MINOR, prior = 1.12f),
+        ChordTemplate("m7", listOf(0, 3, 10, 7), ChordQuality.MINOR, SeventhType.MINOR, prior = 1.16f),
+        ChordTemplate("maj7", listOf(0, 4, 11, 7), ChordQuality.MAJOR, SeventhType.MAJOR, prior = 1.14f),
+        ChordTemplate("6", listOf(0, 4, 9, 7), ChordQuality.MAJOR, SeventhType.NONE, sixth = true, prior = 0.84f),
+        ChordTemplate("m6", listOf(0, 3, 9, 7), ChordQuality.MINOR, SeventhType.NONE, sixth = true, prior = 0.82f),
         ChordTemplate(
             "sus4", listOf(0, 5, 7), ChordQuality.SUSPENDED, SeventhType.NONE,
             suspensions = setOf(4), prior = 0.9f),
