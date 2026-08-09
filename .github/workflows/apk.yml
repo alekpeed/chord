@@ -1,7 +1,8 @@
-# Builds the installable app and the desktop analyzer, and publishes both at URLs that never
-# change:
+# Builds the tablet app, the desktop app and the command-line analyzer, and publishes all three at
+# URLs that never change:
 #
 #     https://github.com/alekpeed/chord/releases/latest/download/hearsay.apk
+#     https://github.com/alekpeed/chord/releases/latest/download/hearsay-desktop-linux.zip
 #     https://github.com/alekpeed/chord/releases/latest/download/hearsay-analyze.zip
 #
 # The release is replaced on every build, so those links are always the newest build. A second copy
@@ -73,11 +74,11 @@ jobs:
           HEARSAY_VERSION_CODE: ${{ github.run_number }}
         run: ./gradlew assembleRelease --stacktrace
 
-      - name: Build the desktop analyzer
+      - name: Build the desktop app and the analyzer
         # The same analysis the tablet runs, on a machine with memory. :core:audio and :core:model
         # are plain Kotlin with no Android dependency, which is the constraint that lets this exist
         # without a second implementation to drift out of step with the first.
-        run: ./gradlew :tools:analyzer:distZip --stacktrace
+        run: ./gradlew :tools:analyzer:distZip :tools:desktop:createDistributable --stacktrace
 
       - name: Collect the APK
         id: collect
@@ -96,6 +97,11 @@ jobs:
           analyzer=$(ls tools/analyzer/build/distributions/*.zip | head -1)
           cp "$analyzer" "dist/hearsay-analyze.zip"
           cp "$analyzer" "dist/hearsay-analyze-$version-$short.zip"
+
+          # The desktop app carries its own JRE, so it runs on a machine with no Java installed.
+          out="$PWD/dist"
+          ( cd tools/desktop/build/compose/binaries/main/app && zip -qry "$out/hearsay-desktop-linux.zip" hearsay )
+          cp "dist/hearsay-desktop-linux.zip" "dist/hearsay-desktop-linux-$version-$short.zip"
 
           {
             echo "version=$version"
@@ -123,19 +129,30 @@ jobs:
           cat > notes.md <<NOTES
           **Tablet:** [hearsay.apk]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk)
 
-          **Linux, macOS, Windows:** [hearsay-analyze.zip]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay-analyze.zip)
+          **Linux desktop app:** [hearsay-desktop-linux.zip]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay-desktop-linux.zip)
 
-          Both links always point at the newest build.
+          **Command line, any OS:** [hearsay-analyze.zip]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay-analyze.zip)
+
+          Every link always points at the newest build.
 
           Built from \`$GITHUB_REF_NAME\` at [\`$SHORT\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA). Version $VERSION. APK is $SIZE and requires Android 12 or newer; Android will ask you to allow installing from your browser or file manager the first time, as the app is not on the Play Store.
 
-          The desktop analyzer needs a Java 17+ runtime and \`ffmpeg\` on the path, and runs the identical analysis with a desktop's memory — which is why the Maximum Quality profile is its default and is not offered on the tablet:
+          The desktop app plays the recording against the chart, so you can watch whether the highlighted chord moves with the music — which a printed chord list cannot show you. It bundles its own Java runtime and needs only \`ffmpeg\` on the path:
+
+          \`\`\`
+          unzip hearsay-desktop-linux.zip
+          sudo apt install ffmpeg      # if you do not already have it
+          hearsay/bin/hearsay
+          \`\`\`
+
+          The command-line analyzer is the same analysis without a window, for batches. It needs a Java 17+ runtime as well as ffmpeg:
 
           \`\`\`
           unzip hearsay-analyze.zip && cd analyzer
-          bin/analyzer --help
           bin/analyzer --text ~/Music/some-song.mp3
           \`\`\`
+
+          Both run the identical analysis to the tablet's, with a desktop's memory — which is why the Maximum Quality profile exists here and is not offered on Android.
 
           This build has not been run on a physical device by its author, and chord accuracy on real recordings is unmeasured — see the README.
           NOTES
@@ -153,5 +170,6 @@ jobs:
           {
             echo "### Downloads"
             echo "- $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk"
+            echo "- $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay-desktop-linux.zip"
             echo "- $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay-analyze.zip"
           } >> "$GITHUB_STEP_SUMMARY"
