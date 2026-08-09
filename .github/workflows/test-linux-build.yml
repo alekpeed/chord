@@ -1,0 +1,46 @@
+name: Linux Test Build
+
+on:
+  push:
+    branches: [chatgpt/harmony-accuracy]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-test-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-37.1" "build-tools;37.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Linux desktop package
+        run: |
+          ./gradlew :tools:desktop:createDistributable --stacktrace
+          mkdir -p dist
+          out="$PWD/dist"
+          ( cd tools/desktop/build/compose/binaries/main/app && zip -qry "$out/hearsay-desktop-linux.zip" hearsay )
+
+      - name: Upload Linux desktop package
+        uses: actions/upload-artifact@v4
+        with:
+          name: hearsay-desktop-linux-test
+          path: dist/hearsay-desktop-linux.zip
+          if-no-files-found: error
