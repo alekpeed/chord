@@ -67,20 +67,15 @@ object ChordTemplates {
     /**
      * Interval lists are ordered root, then the tone that defines the quality (the third, or the
      * fourth in a suspension), then everything else — which is what the weighting above reads.
-     *
-     * Sevenths carry a modest structural prior over sixth chords because a sixth chord and the
-     * relative minor seventh can contain exactly the same pitch classes. In that exact tie the
-     * richer seventh identity is the safer default; sustained bass and temporal context can still
-     * establish a genuine sixth chord when the recording supports it.
      */
     val All: List<ChordTemplate> = listOf(
-        ChordTemplate("", listOf(0, 4, 7), ChordQuality.MAJOR, SeventhType.NONE, prior = 1.08f),
-        ChordTemplate("m", listOf(0, 3, 7), ChordQuality.MINOR, SeventhType.NONE, prior = 1.06f),
-        ChordTemplate("7", listOf(0, 4, 10, 7), ChordQuality.MAJOR, SeventhType.MINOR, prior = 1.12f),
-        ChordTemplate("m7", listOf(0, 3, 10, 7), ChordQuality.MINOR, SeventhType.MINOR, prior = 1.16f),
-        ChordTemplate("maj7", listOf(0, 4, 11, 7), ChordQuality.MAJOR, SeventhType.MAJOR, prior = 1.14f),
-        ChordTemplate("6", listOf(0, 4, 9, 7), ChordQuality.MAJOR, SeventhType.NONE, sixth = true, prior = 0.84f),
-        ChordTemplate("m6", listOf(0, 3, 9, 7), ChordQuality.MINOR, SeventhType.NONE, sixth = true, prior = 0.82f),
+        ChordTemplate("", listOf(0, 4, 7), ChordQuality.MAJOR, SeventhType.NONE, prior = 1.1f),
+        ChordTemplate("m", listOf(0, 3, 7), ChordQuality.MINOR, SeventhType.NONE, prior = 1.08f),
+        ChordTemplate("7", listOf(0, 4, 10, 7), ChordQuality.MAJOR, SeventhType.MINOR, prior = 1.06f),
+        ChordTemplate("m7", listOf(0, 3, 10, 7), ChordQuality.MINOR, SeventhType.MINOR, prior = 1.06f),
+        ChordTemplate("maj7", listOf(0, 4, 11, 7), ChordQuality.MAJOR, SeventhType.MAJOR, prior = 1.05f),
+        ChordTemplate("6", listOf(0, 4, 9, 7), ChordQuality.MAJOR, SeventhType.NONE, sixth = true, prior = 0.95f),
+        ChordTemplate("m6", listOf(0, 3, 9, 7), ChordQuality.MINOR, SeventhType.NONE, sixth = true, prior = 0.9f),
         ChordTemplate(
             "sus4", listOf(0, 5, 7), ChordQuality.SUSPENDED, SeventhType.NONE,
             suspensions = setOf(4), prior = 0.9f),
@@ -117,16 +112,16 @@ object ChordTemplates {
     )
 
     /**
-     * Upper color is deliberately excluded from the Viterbi state space.
+     * Color is deliberately excluded from the Viterbi state space.
      *
-     * A 9th, 13th, b9, or #11 can make the same structural harmony match more closely, but it must
-     * never be allowed to change the root decision. Letting F13 compete directly with Dm7, for
-     * example, makes the shared F-A-C-D pitch set look like a new F-root chord even when the audio
-     * is plainly Dm7. The recognizer now decodes root/quality/seventh/sixth/suspension first and
-     * adds sustained upper color to that stable identity afterward.
+     * A 9th, 13th, b9, #11, or sixth can make the same structural harmony match more closely, but
+     * it must never be allowed to choose a different root by itself. F6 and Dm7, for example, are
+     * the exact same pitch-class set. Letting both compete as separate root states makes the result
+     * depend on voicing rather than harmonic evidence. Root/quality/seventh/suspension are decoded
+     * first; sustained color is attached to that stable identity afterward.
      */
     private val IdentityTemplates: List<ChordTemplate> = All.filter { template ->
-        template.extensions.isEmpty() && template.alterations.none { it.degree > 5 }
+        !template.sixth && template.extensions.isEmpty() && template.alterations.none { it.degree > 5 }
     }
 
     /** Every structural identity template at every root, precomputed once. */
@@ -138,7 +133,7 @@ object ChordTemplates {
         val name: String get() = "${PitchNames[root]}${template.label}"
 
         /**
-         * True when [pitchClass] is the sixth or seventh this chord is named for.
+         * True when [pitchClass] is the seventh this chord is named for.
          *
          * These are the notes that separate a chord from its own triad, and the ones a passing tone
          * in the bass or an overtone can most easily counterfeit. Everything at or below the fifth
@@ -164,7 +159,7 @@ object ChordTemplates {
         }
     }
 
-    /** Sixths and sevenths: intervals above the fifth that name a structural chord beyond its triad. */
+    /** Sevenths: intervals above the fifth that name a structural chord beyond its triad. */
     private val ExtensionIntervals = setOf(9, 10, 11)
 
     /** Index of the no-chord state, appended after every real candidate. */
