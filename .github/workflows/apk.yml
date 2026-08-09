@@ -1,9 +1,12 @@
-# Builds the installable app and publishes it at a URL that never changes:
+# Builds the installable app and the desktop analyzer, and publishes both at URLs that never
+# change:
 #
 #     https://github.com/alekpeed/chord/releases/latest/download/hearsay.apk
+#     https://github.com/alekpeed/chord/releases/latest/download/hearsay-analyze.zip
 #
-# The release is replaced on every build, so that link is always the newest APK. A second copy is
-# attached under a versioned name so an older download stays identifiable once it is on a device.
+# The release is replaced on every build, so those links are always the newest build. A second copy
+# of each is attached under a versioned name so an older download stays identifiable once it has
+# been unpacked somewhere.
 name: APK
 
 on:
@@ -70,6 +73,12 @@ jobs:
           HEARSAY_VERSION_CODE: ${{ github.run_number }}
         run: ./gradlew assembleRelease --stacktrace
 
+      - name: Build the desktop analyzer
+        # The same analysis the tablet runs, on a machine with memory. :core:audio and :core:model
+        # are plain Kotlin with no Android dependency, which is the constraint that lets this exist
+        # without a second implementation to drift out of step with the first.
+        run: ./gradlew :tools:analyzer:distZip --stacktrace
+
       - name: Collect the APK
         id: collect
         run: |
@@ -84,6 +93,10 @@ jobs:
           cp "$built" "dist/hearsay.apk"
           cp "$built" "dist/hearsay-$version-$short.apk"
 
+          analyzer=$(ls tools/analyzer/build/distributions/*.zip | head -1)
+          cp "$analyzer" "dist/hearsay-analyze.zip"
+          cp "$analyzer" "dist/hearsay-analyze-$version-$short.zip"
+
           {
             echo "version=$version"
             echo "short=$short"
@@ -93,8 +106,8 @@ jobs:
       - name: Upload as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hearsay-apk
-          path: dist/*.apk
+          name: hearsay-builds
+          path: dist/*
           if-no-files-found: error
 
       - name: Publish the download link
@@ -108,11 +121,21 @@ jobs:
           tag=latest-apk
 
           cat > notes.md <<NOTES
-          **Download:** [hearsay.apk]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk) — that link always points at the newest build.
+          **Tablet:** [hearsay.apk]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk)
 
-          Built from \`$GITHUB_REF_NAME\` at [\`$SHORT\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA). Version $VERSION, $SIZE. Requires Android 12 or newer.
+          **Linux, macOS, Windows:** [hearsay-analyze.zip]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay-analyze.zip)
 
-          Android will ask you to allow installing from your browser or file manager the first time; the app is not on the Play Store.
+          Both links always point at the newest build.
+
+          Built from \`$GITHUB_REF_NAME\` at [\`$SHORT\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA). Version $VERSION. APK is $SIZE and requires Android 12 or newer; Android will ask you to allow installing from your browser or file manager the first time, as the app is not on the Play Store.
+
+          The desktop analyzer needs a Java 17+ runtime and \`ffmpeg\` on the path, and runs the identical analysis with a desktop's memory — which is why the Maximum Quality profile is its default and is not offered on the tablet:
+
+          \`\`\`
+          unzip hearsay-analyze.zip && cd analyzer
+          bin/analyzer --help
+          bin/analyzer --text ~/Music/some-song.mp3
+          \`\`\`
 
           This build has not been run on a physical device by its author, and chord accuracy on real recordings is unmeasured — see the README.
           NOTES
@@ -121,11 +144,14 @@ jobs:
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
           # Deliberately not --prerelease: /releases/latest/ skips prereleases, so marking it one
           # leaves the permanent download link resolving to nothing.
-          gh release create "$tag" dist/*.apk \
+          gh release create "$tag" dist/* \
             --title "Hearsay $VERSION ($SHORT)" \
             --notes-file notes.md \
             --target "$GITHUB_SHA" \
             --latest
 
-          echo "### Download" >> "$GITHUB_STEP_SUMMARY"
-          echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Downloads"
+            echo "- $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay.apk"
+            echo "- $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/hearsay-analyze.zip"
+          } >> "$GITHUB_STEP_SUMMARY"
