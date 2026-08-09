@@ -1,0 +1,1 @@
+Trigger PR synchronize after workflow update so CI applies and validates the bass-only hard guard.
