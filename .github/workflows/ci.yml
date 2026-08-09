@@ -34,9 +34,9 @@ jobs:
       - name: Static analysis
         run: ./gradlew detekt --stacktrace
 
-      - name: Unit tests
-        run: ./gradlew test --stacktrace
-
+      # Produce a runnable desktop artifact before the test gate so feature branches can be
+      # exercised manually while a known analyzer regression is still under investigation.
+      # Unit-test failures below still fail CI and therefore remain visible and merge-blocking.
       - name: Build Linux desktop package
         run: |
           ./gradlew :tools:desktop:createDistributable --stacktrace
@@ -50,6 +50,9 @@ jobs:
           name: hearsay-desktop-linux
           path: dist/hearsay-desktop-linux.zip
           if-no-files-found: error
+
+      - name: Unit tests
+        run: ./gradlew test --stacktrace
 
       - name: Assemble debug
         run: ./gradlew assembleDebug --stacktrace
