@@ -76,6 +76,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin chatgpt/harmony-accuracy
           git checkout -B chatgpt/harmony-accuracy origin/chatgpt/harmony-accuracy
+          git reset --hard origin/chatgpt/harmony-accuracy
           git apply /tmp/root-support.patch
           git add core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/harmony/ChordRecognizer.kt
           git commit -m 'Use persistent bass support for close root ties'
