@@ -1,8 +1,7 @@
 name: Apply bass-only transition hard guard
 
 on:
-  push:
-    branches: [chatgpt/harmony-accuracy]
+  pull_request:
   workflow_dispatch:
 
 permissions:
