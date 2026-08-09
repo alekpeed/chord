@@ -1,0 +1,169 @@
+name: Validate root support fix
+
+on:
+  push:
+    branches: [chatgpt/harmony-accuracy]
+    paths:
+      - '.github/workflows/validate-root-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/harmony-accuracy
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Patch persistent root support locally
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/harmony/ChordRecognizer.kt')
+          text = path.read_text()
+
+          old = '''        val persistentRoots = persistentBassRoots(bassObservations)
+
+        // Bass masking is deliberately limited to change gating. The raw harmonic chroma remains
+'''
+          new = '''        val persistentRoots = persistentBassRoots(bassObservations)
+        val persistentSupport = persistentBassSupport(bassObservations)
+
+        // Bass masking is deliberately limited to change gating. The raw harmonic chroma remains
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = '''        val emissions = rawObservations.mapIndexed { index, observation ->
+            emissionScores(observation, priors, persistentRoots.getOrNull(index))
+        }
+'''
+          new = '''        val emissions = rawObservations.mapIndexed { index, observation ->
+            emissionScores(observation, priors, persistentSupport.getOrNull(index))
+        }
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          marker = '''    /**
+     * Novelty can be excited by a bass note even when bass is not allowed to determine the label.
+'''
+          addition = '''    /**
+     * Keeps low-band support only when the same pitch class remains present in a neighboring span.
+     * A walking bass note that appears for one span therefore cannot steer harmonic identity, while
+     * a real root may remain useful even when another chord tone briefly measures louder.
+     */
+    private fun persistentBassSupport(bass: List<FloatArray>?): List<FloatArray> {
+        if (bass == null) return emptyList()
+        val relative = bass.map { vector ->
+            val peak = vector.maxOrNull() ?: 0f
+            if (peak < BassPresenceThreshold) {
+                FloatArray(12)
+            } else {
+                FloatArray(12) { pc -> (vector.getOrElse(pc) { 0f } / peak).coerceIn(0f, 1f) }
+            }
+        }
+        return relative.indices.map { index ->
+            FloatArray(12) { pc ->
+                val current = relative[index][pc]
+                val agreesBefore = index > 0 && relative[index - 1][pc] >= BassPersistenceFloor
+                val agreesAfter = index + 1 < relative.size && relative[index + 1][pc] >= BassPersistenceFloor
+                current.takeIf { it >= BassPersistenceFloor && (agreesBefore || agreesAfter) } ?: 0f
+            }
+        }
+    }
+
+'''
+          assert marker in text
+          text = text.replace(marker, addition + marker, 1)
+
+          start = text.index('''    private fun emissionScores(\n''')
+          end = text.index('''    private fun hasSeventhSupport''', start)
+          replacement = '''    private fun emissionScores(
+        observed: FloatArray,
+        priors: FloatArray,
+        persistentBassSupport: FloatArray?,
+    ): FloatArray {
+        val scores = FloatArray(ChordTemplates.StateCount)
+        for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
+            var dot = 0f
+            for (pc in 0 until 12) {
+                val weight = if (extensionPenalty != 1f && isColorTone(candidate, pc)) {
+                    extensionPenalty
+                } else {
+                    1f
+                }
+                dot += observed[pc] * candidate.vector[pc] * weight
+            }
+            scores[index] = dot * priors[index]
+        }
+        applyPersistentBassRootTieBreak(scores, observed, persistentBassSupport)
+
+        var energy = 0f
+        for (value in observed) energy += value * value
+        scores[ChordTemplates.NoChordIndex] = if (energy < 1e-4f) 1f else noChordThreshold
+        return scores
+    }
+
+    private fun applyPersistentBassRootTieBreak(
+        scores: FloatArray,
+        observed: FloatArray,
+        persistentBassSupport: FloatArray?,
+    ) {
+        if (persistentBassSupport == null || persistentBassSupport.isEmpty()) return
+        val bestFullBand = ChordTemplates.Candidates.indices.maxOfOrNull { scores[it] } ?: return
+        if (bestFullBand <= 0f) return
+
+        for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
+            if (scores[index] < bestFullBand * BassTieBreakFloor) continue
+            val support = persistentBassSupport.getOrElse(candidate.root) { 0f }
+            if (support < BassRootSupportFloor || !hasSeventhSupport(candidate, observed)) continue
+            scores[index] *= 1f + BassRootPriorStrength * support
+        }
+    }
+
+'''
+          text = text[:start] + replacement + text[end:]
+
+          old = '''        const val SustainedSeventhRootBoost = 1.32f
+        const val SeventhSupportRatio = 0.35f
+'''
+          new = '''        const val BassTieBreakFloor = 0.92f
+        const val BassRootSupportFloor = 0.55f
+        const val BassRootPriorStrength = 0.18f
+        const val BassPersistenceFloor = 0.35f
+        const val SeventhSupportRatio = 0.35f
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run critical audio tests
+        run: |
+          ./gradlew :core:audio:test \
+            --tests '*AudioAnalyzerTest' \
+            --tests '*ChordRecognizerStabilityTest' \
+            --tests '*SilentGapTest' \
+            --stacktrace
+
+      - name: Commit validated fix
+        if: success()
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/audio/src/main/kotlin/com/alekpeed/hearsay/core/audio/harmony/ChordRecognizer.kt
+          git commit -m 'Use persistent bass support for close root ties'
+          git push origin HEAD:chatgpt/harmony-accuracy
