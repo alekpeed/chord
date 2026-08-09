@@ -107,7 +107,8 @@ class ChordRecognizer(
 
         val priors = contextPriors(key)
         val emissions = observations.map { observation -> emissionScores(observation, priors) }
-        val path = viterbi(emissions, changeLikelihood)
+        val effectiveChangeLikelihood = gateChangeLikelihood(changeLikelihood, observations)
+        val path = viterbi(emissions, effectiveChangeLikelihood)
         val refined = refineSpans(spans, path, chroma)
         val stableChords = enrichHarmonicRuns(path, observations, preferFlats)
 
@@ -132,6 +133,30 @@ class ChordRecognizer(
                 )
             }
         }
+    }
+
+    /**
+     * A generic novelty detector can fire on bass motion. Before its result is allowed to relax the
+     * decoder, require corroborating movement in the bass-suppressed harmonic observations.
+     *
+     * This does not quantize changes to the beat. It only decides whether a proposed off-grid/beat
+     * boundary deserves to make chord switching easier; the boundary itself remains at its measured
+     * time and the later refinement still places a genuine change at the audio transition.
+     */
+    private fun gateChangeLikelihood(
+        requested: FloatArray?,
+        observations: List<FloatArray>,
+    ): FloatArray? {
+        if (requested == null) return null
+        val out = requested.copyOf()
+        for (index in 1 until minOf(out.size, observations.size)) {
+            var dot = 0f
+            for (pc in 0 until 12) dot += observations[index - 1][pc] * observations[index][pc]
+            val harmonicDistance = (1f - dot).coerceIn(0f, 1f)
+            val corroboration = (harmonicDistance / FullChangeDistance).coerceIn(0f, 1f)
+            out[index] *= corroboration
+        }
+        return out
     }
 
     /**
@@ -368,7 +393,6 @@ class ChordRecognizer(
                 }
             }
         } else if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.MINOR) {
-            // Without a seventh the same notes are additions rather than 9/11 extensions.
             if (support(2) >= threshold) additions += 9
             if (support(5) >= threshold) additions += 11
         }
@@ -558,6 +582,7 @@ class ChordRecognizer(
         const val KeyPriorStrength = 0.9f
         const val ChangeRelief = 0.60f
         const val MinimumChangeCost = 0.15f
+        const val FullChangeDistance = 0.12f
 
         const val TonicFit = 1.30f
         const val DominantFit = 1.20f
