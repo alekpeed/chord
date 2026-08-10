@@ -5,3 +5,7 @@ soundfile>=0.12
 onnx>=1.16
 onnxruntime>=1.18
 tqdm>=4.66
+
+# Only for generate_corpus.py, which reads back the MIDI that MMA writes to check the audio
+# against its label. Training and evaluation do not need it.
+mido>=1.3

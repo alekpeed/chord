@@ -52,6 +52,45 @@ impression.
 and writes a JSON card beside it with the vocabulary, feature settings and checksum that
 `docs/model-registry.md` requires before a model is allowed in.
 
+## Making music to train on
+
+The annotation sets cover songs you mostly do not own, and the classes they do cover are the
+common ones. `generate_corpus.py` goes the other way: write the chords first and produce audio
+that plays them, so the label is exact by construction and rare qualities can be asked for
+deliberately.
+
+```bash
+sudo apt install mma fluidsynth fluid-soundfont-gm
+pip install mido
+
+python3 generate_corpus.py --out data/generated --keys 12 --stems
+python3 prepare_data.py --annotations data/generated/annotations \
+    --audio data/generated/audio --out data/features
+```
+
+`mma` writes an arrangement — separate bass, drums and comping — from a chord chart, and
+`fluidsynth` renders it through a SoundFont, which is recorded instruments rather than synthesis.
+The built-in progressions cover all thirteen qualities, including the `dim`, `aug`, `sus2`,
+`min6` and `hdim7` the published corpora are thinnest on.
+
+**Nothing MMA does is taken on trust.** It has its own opinions about chord names, and two of them
+would silently mislabel every affected track: `Cdim` is voiced as a diminished *seventh*, and a
+groove that comps on beats one and three will not play a chord written on beat two — MMA accepts
+four chords in a bar and plays two. Most grooves also anticipate, comping the second chord of a
+bar a whole beat before the chart says it starts. So every track is read back and checked against
+the chart that made it, and one whose audio disagrees with its label is refused rather than
+written with a warning. The reasons land in `rejected.txt`; each is a chart or a groove to fix.
+
+`--stems` additionally writes each instrument on its own. These are not separated audio and carry
+none of the artifacts that word implies: the parts were never mixed, so the stems are exact,
+sample-aligned, and sum back to the mix. That is what makes them worth having for testing whether
+combining predictions across mix, accompaniment and bass is worth anything — an idea a stem
+separator's own damage makes impossible to test cleanly.
+
+What this does not give you is a finished record: a SoundFont is dry and unmixed, nobody is
+singing, and MMA's styles are its own combo idiom. It is coverage of chords real corpora are thin
+on, to be mixed with real recordings rather than to replace them.
+
 ## How much music you actually need
 
 The annotation sets cover well over a thousand songs, but you can only use the ones you own.
