@@ -115,7 +115,16 @@ class Chromagram(
         const val ReferenceFrequency = 440.0
 
         private const val LowestFrequency = 55.0
-        private const val HighestFrequency = 2_093.0
+
+        /**
+         * C6, the top of the register accompaniment is actually voiced in.
+         *
+         * The band used to run to C7. Nothing harmonic lives up there — what does live there is
+         * the upper half of the sung melody, plus cymbal wash and the high partials of everything
+         * else, and all of it was being folded into the chord evidence as though it were harmony.
+         */
+        private const val HighestFrequency = 1_046.5
+
         private const val HarmonicCount = 6
         private const val HarmonicDecay = 0.75f
 
@@ -130,8 +139,31 @@ class Chromagram(
 
         private const val HarmonicSuppression = 1.15f
 
+        /**
+         * D4, in the register chords are played in — not A4, the register they are sung over.
+         *
+         * The taper used to be centered on 440 Hz, the heart of the vocal range, which weighted a
+         * sung A4 about 2.6 times an A2 in the bass. There is no vocal separation anywhere in this
+         * pipeline — the harmonic/percussive split removes drums, and a voice is harmonic — so a
+         * held melody note arrives as chord evidence, and being held, it also satisfies every
+         * persistence check downstream. A singer sustaining a B-flat over a G and a D is enough to
+         * license G minor in a recording containing no B-flat, which is what was reported.
+         *
+         * Centered here that advantage falls to about 1.5, and above roughly E5 the bass outweighs
+         * the melody outright. The voice is still measured and can still be wrong; it no longer
+         * starts the argument ahead of the instruments playing the chords.
+         *
+         * A3 was tried first, to equalize the two octaves completely, and had to be abandoned. At
+         * 22 kHz with a 4096-point transform the bins are 5.4 Hz apart while a semitone at C3 is
+         * 7.7 Hz, so low fundamentals barely resolve and smear into the neighboring pitch class.
+         * Weighting that region hard enough amplified the smear into a phantom minor ninth above
+         * every root, and a progression of clean sevenths came back as Dm7b9, G7b9, C7b9. Fixing
+         * that properly means resolving low bins better, not weighting them more.
+         */
+        private const val BandCenterFrequency = 293.66
+
         private fun bandWeight(frequency: Double): Float {
-            val octavesFromCenter = log2(frequency / 440.0)
+            val octavesFromCenter = log2(frequency / BandCenterFrequency)
             return (2.0.pow(-0.35 * octavesFromCenter * octavesFromCenter)).toFloat()
         }
 
