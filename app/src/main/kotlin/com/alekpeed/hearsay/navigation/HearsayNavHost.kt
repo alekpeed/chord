@@ -7,6 +7,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.alekpeed.hearsay.BuildIdentity
 import com.alekpeed.hearsay.feature.eartraining.ui.EarTrainingRoute
 import com.alekpeed.hearsay.feature.library.ui.LibraryRoute
 import com.alekpeed.hearsay.feature.performance.PerformanceViewModel
@@ -41,6 +42,7 @@ fun HearsayNavHost(
         composable(TopLevelRoute.LIBRARY.route) {
             LibraryRoute(
                 onOpenProject = { projectId -> navController.navigate(Destinations.performance(projectId)) },
+                versionLabel = BuildIdentity.label,
             )
         }
 

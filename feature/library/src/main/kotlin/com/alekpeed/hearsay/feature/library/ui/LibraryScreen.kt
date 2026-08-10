@@ -56,6 +56,9 @@ import com.alekpeed.hearsay.feature.library.LibraryViewModel
 fun LibraryRoute(
     onOpenProject: (String) -> Unit,
     modifier: Modifier = Modifier,
+    // Supplied by the app module, which is the only one that can see the generated BuildConfig.
+    // Null in a preview or a test, where there is no build to identify.
+    versionLabel: String? = null,
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -78,7 +81,25 @@ fun LibraryRoute(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { TopAppBar(title = { Text("Library") }) },
+        topBar = {
+            TopAppBar(
+                title = {
+                    // In the bar rather than in the list: the list scrolls and can be empty, and a
+                    // version you have to scroll to find is one nobody quotes in a bug report.
+                    Column {
+                        Text("Library")
+                        if (versionLabel != null) {
+                            Text(
+                                text = versionLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.testTag(VersionTestTag),
+                            )
+                        }
+                    }
+                },
+            )
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             ExtendedFloatingActionButton(
@@ -295,3 +316,6 @@ private val SupportedMimeTypes = arrayOf("audio/*", "video/*")
 
 internal const val AddSongTestTag = "add-song"
 internal const val ProjectListTestTag = "project-list"
+
+/** Named so a test can assert the front page identifies the build it is running. */
+const val VersionTestTag = "library-version"

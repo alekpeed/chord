@@ -12,7 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import com.alekpeed.hearsay.BuildConfig
+import com.alekpeed.hearsay.BuildIdentity
 
 /**
  * Destinations that exist in the navigation model but have no feature behind them yet.
@@ -66,8 +66,8 @@ fun SettingsPlaceholderScreen(modifier: Modifier = Modifier) = NotBuiltYetScreen
     explanation = "Processing profile, notation preferences, model downloads and storage management " +
         "will live here.",
     blockedBy = "Not built yet. Nothing in this build sends data anywhere: everything is stored on this device.",
-    // The commit this build came from. Without it, a report of what the app did cannot be tied to a
-    // version, and a fix that is working is indistinguishable from one that was never installed.
-    version = "Hearsay ${BuildConfig.VERSION_NAME} · build ${BuildConfig.BUILD_NUMBER} · ${BuildConfig.GIT_SHA}",
+    // Same line as the front page, from the same place, so the two can never disagree about which
+    // build is running.
+    version = BuildIdentity.label,
     modifier = modifier,
 )
