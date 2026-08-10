@@ -88,6 +88,7 @@ class ChordRecognizer(
         preferFlats: Boolean = false,
         key: KeyContext? = null,
         changeLikelihood: FloatArray? = null,
+        beatMs: Long = StructuralTransitionGate.DefaultBeatMs,
     ): List<RecognizedChord> {
         if (beatTimesMs.size < 2) return emptyList()
 
@@ -130,9 +131,16 @@ class ChordRecognizer(
         val path = viterbi(emissions, gatedChangeLikelihood)
         alignDelayedTransitions(path, spans, changeLikelihood)
         decodeStructuralRuns(path, changeObservations, bassObservations, priors, emissions)
-        StructuralTransitionGate.confirmStructuralChanges(path, spans, changeObservations, gatedChangeLikelihood, emissions)
+        StructuralTransitionGate.confirmStructuralChanges(
+            path = path,
+            spans = spans,
+            upperObservations = changeObservations,
+            changeLikelihood = gatedChangeLikelihood,
+            emissions = emissions,
+            beatMs = beatMs,
+        )
         StructuralTransitionGate.requireBassMovement(path, bassObservations?.map(::dominantPitchClass))
-        StructuralTransitionGate.collapseSandwichNoise(path, spans, emissions)
+        StructuralTransitionGate.collapseSandwichNoise(path, spans, emissions, beatMs)
         val refined = refineSpans(spans, path, chroma, changeLikelihood)
         val stableChords = ChordColorEnricher.enrich(
             path = path,

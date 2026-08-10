@@ -11,6 +11,7 @@ import com.alekpeed.hearsay.core.audio.harmony.HarmonicNovelty
 import com.alekpeed.hearsay.core.audio.harmony.KeyContext
 import com.alekpeed.hearsay.core.audio.harmony.KeyEstimator
 import com.alekpeed.hearsay.core.audio.harmony.RecognizedChord
+import com.alekpeed.hearsay.core.audio.harmony.StructuralTransitionGate
 import com.alekpeed.hearsay.core.audio.harmony.chordChangeStrength
 import com.alekpeed.hearsay.core.audio.harmony.dropUnplayableRegions
 import com.alekpeed.hearsay.core.audio.harmony.joinRepeatedRegions
@@ -386,11 +387,22 @@ class AudioAnalyzer(
                     confidence = keyEstimate.confidence,
                 ),
                 changeLikelihood = spanChangeLikelihood(boundaries, changeTimesMs, novelty, chroma),
+                // The real beat, not the analysis spans: boundaries also carry detected harmonic
+                // changes, so their spacing is not a tempo. How long a chord must hold to be
+                // believed is a musical duration, and this is what makes it one.
+                beatMs = medianBeatMs(beatTimesMs),
             )
         } else {
             emptyList()
         }
         return HarmonyAnalysis(chroma, keyEstimate, preferFlats, bassBuffer, chords)
+    }
+
+    /** The beat grid's own median spacing, or 120 BPM when there is no usable grid. */
+    private fun medianBeatMs(beatTimesMs: List<Long>): Long {
+        val spacings = beatTimesMs.zipWithNext { a, b -> b - a }.filter { it > 0 }.sorted()
+        if (spacings.isEmpty()) return StructuralTransitionGate.DefaultBeatMs
+        return spacings[spacings.size / 2]
     }
 
     /**

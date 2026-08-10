@@ -79,14 +79,19 @@ internal object StructuralTransitionGate {
      * suspension — confirm faster and without the margin, because the elimination gate has
      * already required their distinguishing tone to persist in the audio.
      */
+    @Suppress("LongParameterList")
     fun confirmStructuralChanges(
         path: IntArray,
         spans: List<Pair<Long, Long>>,
         upperObservations: List<FloatArray>,
         changeLikelihood: FloatArray?,
         emissions: List<FloatArray>,
+        beatMs: Long,
     ) {
         if (path.size < 2) return
+        val normalConfirmation = (beatMs * NormalConfirmationBeats).toLong()
+        val strongConfirmation = (beatMs * StrongConfirmationBeats).toLong()
+        val sameRootConfirmation = (beatMs * SameRootConfirmationBeats).toLong()
         var established = path[0]
         var index = 1
         while (index < path.size) {
@@ -107,13 +112,13 @@ internal object StructuralTransitionGate {
             val durationMs = spans[end - 1].second - spans[index].first
             val sameRoot = ChordTemplates.Candidates[candidate].root == ChordTemplates.Candidates[established].root
             val confirmed = if (sameRoot) {
-                durationMs >= SameRootConfirmationMs
+                durationMs >= sameRootConfirmation
             } else {
                 val upperDistance = observationDistance(upperObservations[index - 1], upperObservations[index])
                 val novelty = changeLikelihood?.getOrNull(index) ?: 0f
                 val stronglyCorroborated = upperDistance >= StrongChangeDistance && novelty >= StrongChangeLikelihood
-                val longEnough = durationMs >= NormalConfirmationMs ||
-                    (stronglyCorroborated && durationMs >= StrongConfirmationMs)
+                val longEnough = durationMs >= normalConfirmation ||
+                    (stronglyCorroborated && durationMs >= strongConfirmation)
                 longEnough && meanAdvantage(emissions, index, end, candidate, established) >= RootChangeMargin
             }
 
@@ -134,8 +139,14 @@ internal object StructuralTransitionGate {
      * decisively better than the surrounding chord does, three rows saying C7, something, C7 were
      * one C7 all along. A genuine passing chord keeps its overwhelming local evidence and stays.
      */
-    fun collapseSandwichNoise(path: IntArray, spans: List<Pair<Long, Long>>, emissions: List<FloatArray>) {
+    fun collapseSandwichNoise(
+        path: IntArray,
+        spans: List<Pair<Long, Long>>,
+        emissions: List<FloatArray>,
+        beatMs: Long,
+    ) {
         if (path.size < 3) return
+        val sandwichMax = (beatMs * SandwichMaxBeats).toLong()
         var index = 1
         while (index < path.size) {
             val state = path[index]
@@ -151,7 +162,7 @@ internal object StructuralTransitionGate {
             val durationMs = spans[end - 1].second - spans[index].first
             val sandwiched = path[end] == surrounding && state != ChordTemplates.NoChordIndex &&
                 surrounding != ChordTemplates.NoChordIndex
-            if (sandwiched && durationMs <= SandwichMaxMs &&
+            if (sandwiched && durationMs <= sandwichMax &&
                 meanAdvantage(emissions, index, end, state, surrounding) < SandwichOverwhelmingMargin
             ) {
                 for (span in index until end) path[span] = surrounding
@@ -173,12 +184,30 @@ internal object StructuralTransitionGate {
         return total / (untilExclusive - from)
     }
 
-    const val NormalConfirmationMs = 650L
-    const val StrongConfirmationMs = 350L
-    const val SameRootConfirmationMs = 350L
+    /**
+     * How long a chord must hold, in beats — not milliseconds.
+     *
+     * These were absolute durations, and absolute durations are a statement about physics rather
+     * than about music. Reported from the desktop build: four chords inside one bar of a 56 BPM
+     * song, the middle two lasting 670 ms each. A beat at that tempo is 1071 ms, so each of those
+     * readings was two thirds of a single beat — and each cleared a 650 ms confirmation threshold
+     * and a 600 ms sandwich ceiling by a few dozen milliseconds. The same constants at 120 BPM
+     * mean 1.3 and 1.2 beats, which is why they looked reasonable when they were chosen.
+     *
+     * Expressed in beats they behave identically at 120 BPM and tighten as the music slows, which
+     * is what a listener means by "nobody plays a chord for that long at this tempo".
+     * [UnplayableChordBeats] in ChordRegions already worked this way; these now agree with it.
+     */
+    const val NormalConfirmationBeats = 1.3f
+    const val StrongConfirmationBeats = 0.7f
+    const val SameRootConfirmationBeats = 0.7f
+    const val SandwichMaxBeats = 1.2f
+
+    /** Assumed when no beat grid is available: 120 BPM, the tempo the old constants encoded. */
+    const val DefaultBeatMs = 500L
+
     const val StrongChangeDistance = 0.32f
     const val StrongChangeLikelihood = 0.65f
     const val RootChangeMargin = 0.04f
-    const val SandwichMaxMs = 600L
     const val SandwichOverwhelmingMargin = 0.12f
 }
