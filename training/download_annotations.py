@@ -57,7 +57,7 @@ MANUAL = [
     (
         "McGill Billboard",
         "~740 chart hits, 1958-1991 — the biggest single source",
-        "https://ddmal.music.mcgill.ca/research/The_McGill_Billboard_Project_(Chord_Analysis_Dataset)/",
+        "https://ddmal.ca/research/The_McGill_Billboard_Project_(Chord_Analysis_Dataset)/",
         "Download the LAB annotations archive and unpack it into your annotations folder.",
     ),
     (
