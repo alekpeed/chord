@@ -159,26 +159,77 @@ class CandidateEliminationTest {
         )
     }
 
-    /** No candidate at all is not a reason to invent one: the gate stands down instead. */
+    /**
+     * Reported from the desktop build: a G minor in a song with no B-flat anywhere in it.
+     *
+     * A minor chord is minor because of its third. If the recording has a B natural and no
+     * B-flat, every name that needs a B-flat is unavailable, however well the rest of the notes
+     * happen to line up.
+     */
     @Test
-    fun `elimination stands down rather than emptying a span`() {
+    fun `a minor chord is not named when its third was never played`() {
+        val frames = Array(40) { vector(G_TRIAD).let(Chromagram::normalize) }
+        val chord = recognizeSingle(frames)
+
+        assertEquals(7, chord.root.pitchClass)
+        assertEquals("G major has no B-flat to make it minor: $chord", ChordQuality.MAJOR, chord.quality)
+    }
+
+    /**
+     * The general form of the same rule: nothing may be written that was not heard. A chord whose
+     * spelling contains a pitch class absent from the recording is an invention no matter which
+     * stage produced it, so this asserts over the whole emitted chord rather than one tone.
+     */
+    @Test
+    fun `every tone in an emitted chord was present in the audio`() {
+        val played = listOf(G_TRIAD, C_TRIAD, DM7, C7)
+        for (pitchClasses in played) {
+            val frames = Array(40) { vector(pitchClasses).let(Chromagram::normalize) }
+            val chord = recognizeSingle(frames)
+            val named = chord.copy(bass = null).pitchClasses()
+            val absent = named - pitchClasses.toSet()
+            assertTrue(
+                "Chord $chord names $absent, which is not in ${pitchClasses.sorted()}",
+                absent.isEmpty(),
+            )
+        }
+    }
+
+    /**
+     * A span nothing fits is a blank row, not a guess.
+     *
+     * The gate used to stand down when no candidate survived, on the reasoning that removing
+     * everything hands the decision to noise. It does the opposite: it hands the muddiest moment
+     * in the recording to whichever template happens to fit it best, which is where invented
+     * chords come from. Printing nothing is the honest answer and the one this asserts.
+     */
+    @Test
+    fun `a span with no legible harmony is left blank`() {
         val reports = mutableListOf<SpanEliminationReport>()
         val trace = object : ChordDecisionTrace {
             override fun onSpan(report: SpanEliminationReport) {
                 reports += report
             }
         }
-        // Flat, nearly uniform chroma: nothing passes validation, and nothing should be forced.
-        val frames = Array(40) { FloatArray(12) { 0.05f }.let(Chromagram::normalize) }
-        ChordRecognizer(slashChords = false, extensionPenalty = 1f, trace = trace).recognize(
+        // One note, held. It has a root and nothing else — no third to make it major or minor, no
+        // suspension, no fifth. A single note is not a chord, and the chart should say so by
+        // saying nothing. (A uniform chroma would be the wrong fixture here: measured against the
+        // loudest tone present, every pitch class in it reads as fully present rather than as
+        // absent, so it tests the measure rather than the rule.)
+        val frames = Array(40) { vector(listOf(0)).let(Chromagram::normalize) }
+        val recognized = ChordRecognizer(slashChords = false, extensionPenalty = 1f, trace = trace).recognize(
             chroma = Chromagram(frames, HopSeconds),
             beatTimesMs = listOf(0L, 2_000L),
         )
 
         assertTrue("Expected trace reports", reports.isNotEmpty())
         assertTrue(
-            "With no survivors the gate must not apply: $reports",
-            reports.none { report -> report.eliminationApplied && report.verdicts.all { it.eliminated } },
+            "Nothing should have validated against a flat chroma",
+            reports.all { report -> report.verdicts.all { it.eliminated } },
+        )
+        assertTrue(
+            "An unnameable span must be blank, got ${recognized.map { it.chord }}",
+            recognized.all { it.chord == null },
         )
     }
 
@@ -214,6 +265,7 @@ class CandidateEliminationTest {
     private companion object {
         const val HopSeconds = 0.05
         val C_TRIAD = listOf(0, 4, 7)
+        val G_TRIAD = listOf(7, 11, 2)
         val C7 = listOf(0, 4, 7, 10)
         val DM7 = listOf(2, 5, 9, 0)
         val F_TRIAD = listOf(5, 9, 0)

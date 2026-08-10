@@ -25,7 +25,7 @@ data class SpanEliminationReport(
     val spanIndex: Int,
     val startMs: Long,
     val endMs: Long,
-    /** False when every candidate failed and elimination stood down rather than empty the chart. */
+    /** Always true. Retained so a trace records that the span was judged rather than skipped. */
     val eliminationApplied: Boolean,
     val verdicts: List<CandidateVerdict>,
 )
@@ -54,9 +54,9 @@ internal class SpanEvidence(
  * consideration rather than merely scored down.
  *
  * Evidence comes from the bass-reduced view, so a moving bass note cannot establish a root, and
- * from per-frame persistence, so a melody note passing through a span cannot either. Each check
- * tolerates one neighboring span, because a real chord briefly masked (a bar where the root lives
- * only in the bass, a beat where the third decays under the drums) is still the same chord.
+ * from per-frame persistence, so a melody note passing through a span cannot either. Every check
+ * is answered within its own span: an earlier version let a candidate borrow a passing verdict
+ * from a neighbor, which put a chord nobody played one stray frame away from being licensed.
  */
 internal object ChordCandidateGate {
 
@@ -82,32 +82,36 @@ internal object ChordCandidateGate {
         }
 
         for (index in spans.indices) {
-            val eliminated = BooleanArray(ChordTemplates.Candidates.size) { state ->
-                eliminatedWithNeighborTolerance(verdicts, index, state)
+            // Every candidate answers for its own span. Borrowing a pass from a neighbor was one
+            // stray frame away from validating a chord nobody played: a single B-flat anywhere
+            // near a G and a D would license G minor across three spans, which is exactly the
+            // invention this gate exists to stop.
+            for (state in verdicts[index].indices) {
+                if (verdicts[index][state].eliminated) emissions[index][state] -= EliminationPenalty
             }
-            // The confidence floor: when no candidate at all survives, the span offers no usable
-            // structural evidence, and removing everything would hand the decision to noise. The
-            // gate stands down and leaves the decoder's stickiness and the no-chord state to it.
-            val applied = eliminated.any { it } && eliminated.any { !it }
-            if (applied) {
-                for (state in eliminated.indices) {
-                    if (eliminated[state]) emissions[index][state] -= EliminationPenalty
-                }
-            }
-            trace?.onSpan(SpanEliminationReport(index, spans[index].first, spans[index].second, applied, verdicts[index]))
+            // No standing down. A span where nothing validates is a span with no legible harmony,
+            // and the honest output is silence: the no-chord state is left unpenalized, so it wins
+            // and the row stays blank. Disabling the filter there instead handed the muddiest
+            // moments in the recording to whichever template happened to fit them best.
+            trace?.onSpan(SpanEliminationReport(index, spans[index].first, spans[index].second, true, verdicts[index]))
         }
     }
 
     internal fun verdict(candidate: ChordTemplates.Candidate, evidence: SpanEvidence): CandidateVerdict {
-        val rawPeak = max(evidence.rawAggregate.maxOrNull() ?: 0f, 1e-6f)
         val reducedPeak = max(evidence.reducedAggregate.maxOrNull() ?: 0f, 1e-6f)
 
-        // A tone's support is the better of the two views. The raw view can be dominated by a loud
-        // bass; the bass-reduced view can suppress a legitimate chord tone that shares a pitch
-        // class with a bass partial. A tone genuinely sounding stands clear in at least one.
+        // One view, not the better of two: asking twice and accepting either answer gave every
+        // tone two chances at a bar it should clear once. The view is the bass-reduced one,
+        // because these are the tones stacked above the bass and they must be measured against
+        // each other — against the raw chroma, a bass note several times louder than the harmony
+        // makes every voice over it look absent.
+        //
+        // The one exception is a tone the bass is itself holding. The reduction deliberately
+        // erases that pitch class, but a note in the bass is the least disputable note in the
+        // recording, so an inversion is credited rather than denied its own bass.
         fun support(pitchClass: Int): Float = max(
-            evidence.rawAggregate[pitchClass] / rawPeak,
             evidence.reducedAggregate[pitchClass] / reducedPeak,
+            evidence.persistentBass?.getOrNull(pitchClass) ?: 0f,
         )
 
         val rootPc = candidate.root
@@ -174,25 +178,6 @@ internal object ChordCandidateGate {
         return persistence
     }
 
-    /**
-     * A check failed here may borrow a pass from the span on either side. A chord is a region, not
-     * an instant; one span where a tone ducks under the mix does not un-play the chord around it.
-     */
-    private fun eliminatedWithNeighborTolerance(
-        verdicts: List<List<CandidateVerdict>>,
-        span: Int,
-        state: Int,
-    ): Boolean {
-        val here = verdicts[span][state]
-        if (!here.eliminated) return false
-        val before = verdicts.getOrNull(span - 1)?.get(state)
-        val after = verdicts.getOrNull(span + 1)?.get(state)
-        fun passes(check: (CandidateVerdict) -> Boolean): Boolean =
-            check(here) || (before?.let(check) == true) || (after?.let(check) == true)
-        return !(passes { it.rootPass } && passes { it.definingPass } &&
-            passes { it.shellPass } && passes { it.seventhPass })
-    }
-
     private fun definingPitchClass(candidate: ChordTemplates.Candidate): Int =
         Math.floorMod(candidate.root + candidate.template.intervals[1], 12)
 
@@ -241,8 +226,14 @@ internal object ChordCandidateGate {
     /** The root must be audible for most of the span — a struck note, not a passing one. */
     const val RootPersistenceFloor = 0.45f
 
-    const val DefiningSupportFloor = 0.22f
-    const val DefiningPersistenceFloor = 0.40f
+    /**
+     * The tone that makes a chord major rather than minor, or suspended rather than either, has to
+     * be genuinely audible — not merely above the noise. At the old 0.22 a B-flat bin filled by
+     * nothing but the seventh harmonic of a C, or bin leakage from the B natural next door, was
+     * enough to license G minor in a recording containing no B-flat at all.
+     */
+    const val DefiningSupportFloor = 0.40f
+    const val DefiningPersistenceFloor = 0.60f
 
     /** A named seventh must persist; a transient seventh leaves the parent triad standing instead. */
     const val SeventhSupportFloor = 0.22f
