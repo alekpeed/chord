@@ -198,10 +198,21 @@ internal object StructuralTransitionGate {
      * is what a listener means by "nobody plays a chord for that long at this tempo".
      * [UnplayableChordBeats] in ChordRegions already worked this way; these now agree with it.
      */
-    const val NormalConfirmationBeats = 1.3f
+    /**
+     * A chord that lasts a beat is a chord. Nothing above 1.0 can be a correct value here, and the
+     * first version of this was 1.3 — which made a one-beat chord unconfirmable by construction.
+     * It came from preserving the old 650 ms constant at 120 BPM, which is not a musical argument;
+     * it is an arbitrary duration wearing musical units. On a 56 BPM ballad it meant 1392 ms
+     * against a 1071 ms beat, and a real progression came back as one chord held for 11.6 seconds.
+     */
+    const val NormalConfirmationBeats = 0.9f
+
+    /** Corroborated by clear upper-harmony movement, most of a beat is enough. */
     const val StrongConfirmationBeats = 0.7f
     const val SameRootConfirmationBeats = 0.7f
-    const val SandwichMaxBeats = 1.2f
+
+    /** Sandwiched between two readings of one harmony, anything under a beat is noise. */
+    const val SandwichMaxBeats = 0.9f
 
     /** Assumed when no beat grid is available: 120 BPM, the tempo the old constants encoded. */
     const val DefaultBeatMs = 500L
