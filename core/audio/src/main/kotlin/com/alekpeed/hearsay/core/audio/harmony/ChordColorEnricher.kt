@@ -103,11 +103,15 @@ internal object ChordColorEnricher {
             persistence = FloatArray(Chromagram.PitchClasses) { persistentCounts[it].toFloat() / frames.size },
             structuralLevel = structuralLevel,
         )
-        return if (base.seventh != SeventhType.NONE) {
-            addSeventhColor(base, evidence, run)
-        } else {
-            addTriadColor(base, evidence, run)
-        }
+        // A plain triad is left plain.
+        //
+        // Added ninths and elevenths on a triad were where the melody ended up: a sustained sung or
+        // played scale tone over a C major triad became Cadd9 or Cadd11, and the second of those is
+        // barely a chord anyone voices — a natural eleventh sits a semitone from the major third it
+        // would have to share the symbol with. Both are rare in real charts and neither survived
+        // contact with a real recording. A seventh chord still takes color, because there the
+        // upper structure is the point of the name.
+        return if (base.seventh != SeventhType.NONE) addSeventhColor(base, evidence, run) else base
     }
 
     private fun addSeventhColor(base: Chord, evidence: Evidence, run: Run): Chord {
@@ -180,24 +184,14 @@ internal object ChordColorEnricher {
     private fun support(base: Chord, evidence: Evidence, interval: Int): Float =
         evidence.aggregate[Math.floorMod(base.root.pitchClass + interval, 12)]
 
-    private fun addTriadColor(base: Chord, evidence: Evidence, run: Run): Chord {
-        if (base.quality != ChordQuality.MAJOR && base.quality != ChordQuality.MINOR) return base
-        val additions = base.additions.toMutableSet()
-        if (supported(base, evidence, Option(2, 9, TriadNinthMargin, NinthPersistence), run)) additions += 9
-        if (supported(base, evidence, Option(5, 11, TriadEleventhMargin, EleventhPersistence), run)) additions += 11
-        return base.copy(additions = additions).normalized()
-    }
-
     private const val AbsoluteFloor = 0.20f
     private const val FrameAbsoluteFloor = 0.10f
     private const val FrameRelativeFloor = 0.45f
     private const val MinimumFrames = 2
     private const val NinthMargin = 0.52f
     private const val NinthPersistence = 0.55f
-    private const val TriadNinthMargin = 0.58f
     private const val EleventhMargin = 0.58f
     private const val EleventhPersistence = 0.60f
-    private const val TriadEleventhMargin = 0.64f
     private const val ThirteenthMargin = 0.62f
     private const val ThirteenthPersistence = 0.65f
     private const val AlteredMargin = 0.60f

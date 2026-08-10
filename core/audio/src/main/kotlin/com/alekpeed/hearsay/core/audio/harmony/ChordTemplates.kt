@@ -9,6 +9,14 @@ import com.alekpeed.hearsay.core.model.music.SeventhType
 /**
  * The chord vocabulary the recognizer can actually name, as pitch-class templates.
  *
+ * Three shapes were removed after a real recording came back littered with them. Dsus2 is D-E-A,
+ * which is equally A-D-E — an Asus4 — so no evidence can separate the two spellings and the
+ * recognizer was free to reach a fourth away from the harmony either side of it for a name that
+ * fit identically. Augmented and minor-major-seventh are genuinely rare in this repertoire and
+ * were earning their keep only by matching muddy frames: a template that is almost never right
+ * costs more in false positives than it returns in the few bars it would have named correctly.
+ * They can come back when there is evidence they are being missed rather than invented.
+ *
  * Deliberately wider than the triads-only vocabulary most chord apps use — sevenths, sixths and
  * ninths are the point for the repertoire this product targets — but not so wide that every
  * ambiguous chroma finds some exotic template to match. Extensions beyond the ninth are left to
@@ -111,13 +119,9 @@ object ChordTemplates {
         ChordTemplate(
             "7sus4", listOf(0, 5, 10, 7), ChordQuality.SUSPENDED, SeventhType.MINOR,
             suspensions = setOf(4), prior = 0.86f),
-        ChordTemplate(
-            "sus2", listOf(0, 2, 7), ChordQuality.SUSPENDED, SeventhType.NONE,
-            suspensions = setOf(2), prior = 0.8f),
         ChordTemplate("dim", listOf(0, 3, 6), ChordQuality.DIMINISHED, SeventhType.NONE, prior = 0.86f),
         ChordTemplate("dim7", listOf(0, 3, 6, 9), ChordQuality.DIMINISHED, SeventhType.DIMINISHED, prior = 0.84f),
         ChordTemplate("m7b5", listOf(0, 3, 6, 10), ChordQuality.DIMINISHED, SeventhType.MINOR, prior = 0.9f),
-        ChordTemplate("aug", listOf(0, 4, 8), ChordQuality.AUGMENTED, SeventhType.NONE, prior = 0.76f),
         ChordTemplate(
             "9", listOf(0, 4, 10, 7, 2), ChordQuality.MAJOR, SeventhType.MINOR,
             extensions = setOf(9), prior = 0.92f),
@@ -136,8 +140,6 @@ object ChordTemplates {
         ChordTemplate(
             "7#11", listOf(0, 4, 10, 6, 7), ChordQuality.MAJOR, SeventhType.MINOR,
             alterations = setOf(Alteration.SHARP_ELEVEN), prior = 0.68f),
-        ChordTemplate(
-            "mMaj7", listOf(0, 3, 11, 7), ChordQuality.MINOR, SeventhType.MAJOR, prior = 0.66f),
     )
 
     /**
