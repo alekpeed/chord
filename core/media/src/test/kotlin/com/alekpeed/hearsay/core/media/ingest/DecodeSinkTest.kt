@@ -72,6 +72,99 @@ class DecodeSinkTest {
         assertEquals(sizeBeforeReconfigure, sink.size)
     }
 
+    /**
+     * The ordering the old guard could not survive.
+     *
+     * `decode()` configures from the container up front and again from the codec on
+     * `INFO_OUTPUT_FORMAT_CHANGED`. Nothing guarantees a device raises that before its first real
+     * buffer, and one that does not used to lock the container's declared values in for the whole
+     * track — the audio kept decoding, at the wrong rate, and every timestamp derived from it was
+     * wrong by the same ratio. Reported as one platform showing double the tempo another showed
+     * for the same file at the same commit.
+     */
+    @Test
+    fun `the codec's format still wins when audio arrived before it`() {
+        val sink = DecodeSink(targetSampleRate = 22_050, maxOutputSamples = Long.MAX_VALUE)
+        sink.configure(channels = 2, sourceRate = 22_050, expectedOutputSamples = 0)
+
+        // A device that emits audio before announcing its output format.
+        val early = ByteBuffer.allocate(4_000).order(ByteOrder.LITTLE_ENDIAN)
+        sink.append(early, bufferInfoFor(early.capacity()))
+
+        sink.configure(channels = 2, sourceRate = 44_100, expectedOutputSamples = 0, authoritative = true)
+
+        val oneSecond = ByteBuffer.allocate(44_100 * 2 * 2).order(ByteOrder.LITTLE_ENDIAN)
+        sink.append(oneSecond, bufferInfoFor(oneSecond.capacity()))
+
+        val expected = 22_050
+        assertEquals(
+            "The codec's rate must supersede the container's guess even after audio; keeping the " +
+                "guess yields roughly double this",
+            expected.toDouble(),
+            sink.toDecodedAudio().samples.size.toDouble(),
+            expected * 0.02,
+        )
+    }
+
+    /**
+     * The other half of the same defect. A wrong channel count is a time-base error too: the sink
+     * packs [channels] consecutive samples into one frame, so believing a mono stream is stereo
+     * halves the audio and doubles every tempo derived from it, exactly as a wrong rate does.
+     */
+    @Test
+    fun `a channel count corrected by the codec is applied even after audio`() {
+        val sink = DecodeSink(targetSampleRate = 22_050, maxOutputSamples = Long.MAX_VALUE)
+        sink.configure(channels = 2, sourceRate = 22_050, expectedOutputSamples = 0)
+
+        val early = ByteBuffer.allocate(400).order(ByteOrder.LITTLE_ENDIAN)
+        sink.append(early, bufferInfoFor(early.capacity()))
+
+        sink.configure(channels = 1, sourceRate = 22_050, expectedOutputSamples = 0, authoritative = true)
+
+        // One second of genuinely mono audio at the target rate.
+        val oneSecond = ByteBuffer.allocate(22_050 * 2).order(ByteOrder.LITTLE_ENDIAN)
+        sink.append(oneSecond, bufferInfoFor(oneSecond.capacity()))
+
+        val expected = 22_050
+        assertEquals(
+            "Mono read as stereo would halve the audio and double the reported tempo",
+            expected.toDouble(),
+            sink.toDecodedAudio().samples.size.toDouble(),
+            expected * 0.02,
+        )
+    }
+
+    /** Agreement needs no rebuild: the audio already decoded under the guess was decoded correctly. */
+    @Test
+    fun `an agreeing codec format keeps the audio already decoded`() {
+        val sink = DecodeSink(targetSampleRate = 22_050, maxOutputSamples = Long.MAX_VALUE)
+        sink.configure(channels = 1, sourceRate = 22_050, expectedOutputSamples = 0)
+        sink.append(sample(1000), bufferInfoFor(2))
+        val before = sink.size
+
+        sink.configure(channels = 1, sourceRate = 22_050, expectedOutputSamples = 0, authoritative = true)
+
+        assertEquals(before, sink.size)
+    }
+
+    /** Having spoken once, the codec is not second-guessed by the container. */
+    @Test
+    fun `a container guess arriving after the codec is refused`() {
+        val sink = DecodeSink(targetSampleRate = 22_050, maxOutputSamples = Long.MAX_VALUE)
+        sink.configure(channels = 1, sourceRate = 44_100, expectedOutputSamples = 0, authoritative = true)
+        sink.configure(channels = 2, sourceRate = 22_050, expectedOutputSamples = 0)
+
+        val oneSecond = ByteBuffer.allocate(44_100 * 2).order(ByteOrder.LITTLE_ENDIAN)
+        sink.append(oneSecond, bufferInfoFor(oneSecond.capacity()))
+
+        val expected = 22_050
+        assertEquals(
+            expected.toDouble(),
+            sink.toDecodedAudio().samples.size.toDouble(),
+            expected * 0.02,
+        )
+    }
+
     @Test
     fun `the duration cap is enforced inside a codec buffer`() {
         val sink = DecodeSink(targetSampleRate = 22_050, maxOutputSamples = 3)

@@ -170,10 +170,15 @@ def normalize_title(text: str) -> str:
 
     Track numbers, underscores, punctuation and case all differ between an annotation set and
     somebody's music library; what survives is the words.
+
+    Bracketed trailers go too. "(Remastered 2009)" and "[Live]" describe an edition rather than a
+    piece of music, and leaving them in defeats exact matching for a large share of any real
+    library — which then pushes those files onto the fuzzy path, where mistakes are made.
     """
     lowered = text.lower()
     lowered = re.sub(r"^\d+[\s\-_.]+", "", lowered)
     lowered = re.sub(r"\b(cd|disc)\s*\d+\b", "", lowered)
+    lowered = re.sub(r"[\(\[][^\)\]]*[\)\]]", " ", lowered)
     return NORMALIZE_PATTERN.sub("", lowered)
 
 
@@ -192,11 +197,47 @@ def index_audio_library(root: Path) -> dict[str, Path]:
 
 
 def match_audio(annotation_name: str, index: dict[str, Path]) -> Path | None:
-    """Finds the recording an annotation describes, exactly or by containment."""
+    """Finds the recording an annotation describes, exactly or by close containment.
+
+    Containment used to guard only the annotation's length, never the library filename's, so any
+    short personal track name was matched by any long annotation title that happened to contain
+    it. Measured on a real library: the annotation ``Sgt. Pepper's Lonely Hearts Club Band``
+    matched a file called ``07 - Lonely.mp3``, and ``Beautiful`` matched ``04 - Beautiful
+    Eyes.mp3``. Both printed a tick and were written out as training pairs — real chord labels
+    against entirely unrelated audio, which is worse than no data at all, because nothing
+    downstream can tell it is wrong.
+
+    So both sides must now be long enough to mean something, and the shorter has to account for
+    most of the longer: a title inside a much longer title is a different piece of music, not a
+    sloppier spelling of the same one. Where several candidates still qualify the closest wins,
+    rather than whichever the dictionary happened to yield first.
+
+    This is text, though, and text cannot establish that two files are the same recording. It
+    cannot see the artist, and a title is not unique. Treat what survives here as a candidate to
+    be verified, not a fact.
+    """
     key = normalize_title(annotation_name)
+    if not key:
+        return None
     if key in index:
         return index[key]
+
+    best: Path | None = None
+    best_ratio = 0.0
     for candidate_key, path in index.items():
-        if len(key) >= 8 and (key in candidate_key or candidate_key in key):
-            return path
-    return None
+        if len(key) < MINIMUM_FUZZY_LENGTH or len(candidate_key) < MINIMUM_FUZZY_LENGTH:
+            continue
+        if key not in candidate_key and candidate_key not in key:
+            continue
+        ratio = min(len(key), len(candidate_key)) / max(len(key), len(candidate_key))
+        if ratio >= MINIMUM_CONTAINMENT_RATIO and ratio > best_ratio:
+            best_ratio = ratio
+            best = path
+    return best
+
+
+#: Below this many characters a title is too generic for containment to mean anything.
+MINIMUM_FUZZY_LENGTH = 10
+
+#: How much of the longer title the shorter one has to account for before they are the same song.
+MINIMUM_CONTAINMENT_RATIO = 0.75

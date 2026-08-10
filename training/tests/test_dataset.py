@@ -146,6 +146,38 @@ class AudioMatchingTest(unittest.TestCase):
             dataset.match_audio("11_-_Norwegian_Wood", index),
         )
 
+    def test_a_short_library_title_is_not_matched_by_a_long_annotation(self):
+        """The defect this guards, measured on a real library.
+
+        Containment guarded only the annotation's length, never the filename's, so an unrelated
+        personal track called "Lonely" was matched by the Beatles annotation that happens to
+        contain the word. It was written out as a training pair — real chord labels against
+        entirely unrelated audio — with a tick and no warning.
+        """
+        index = {
+            dataset.normalize_title("07 - Lonely"): Path("/music/lonely.mp3"),
+            dataset.normalize_title("04 - Beautiful Eyes"): Path("/music/eyes.mp3"),
+        }
+        self.assertIsNone(
+            dataset.match_audio("01_-_Sgt._Pepper's_Lonely_Hearts_Club_Band", index)
+        )
+        self.assertIsNone(dataset.match_audio("Beautiful", index))
+
+    def test_edition_brackets_do_not_prevent_a_match(self):
+        """Remaster and live markers describe an edition, not a piece of music.
+
+        Leaving them in defeats exact matching across a large share of any real library, which
+        pushes those files onto the fuzzy path where the mistakes get made.
+        """
+        index = {
+            dataset.normalize_title("A Day In The Life (Remastered 2009)"): Path("/music/day.flac"),
+            dataset.normalize_title("Norwegian Wood [Live]"): Path("/music/wood.flac"),
+        }
+        self.assertEqual(
+            dataset.match_audio("a_day_in_the_life", index), Path("/music/day.flac")
+        )
+        self.assertEqual(dataset.match_audio("Norwegian Wood", index), Path("/music/wood.flac"))
+
     def test_reports_nothing_when_the_recording_is_not_owned(self):
         # The honest outcome: the song is listed as missing rather than matched to the wrong file.
         index = {dataset.normalize_title("Michelle"): Path("/music/michelle.flac")}

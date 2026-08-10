@@ -159,10 +159,13 @@ class PcmDecoder @Inject constructor(
             when (val outputIndex = codec.dequeueOutputBuffer(bufferInfo, TimeoutUs)) {
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val newFormat = codec.outputFormat
+                    // The codec speaking for itself, which outranks the container's declaration
+                    // even if audio has already been produced under it.
                     sink.configure(
                         newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT),
                         newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE),
                         expectedOutputSamples,
+                        authoritative = true,
                     )
                 }
 
@@ -285,9 +288,13 @@ internal class DecodeSink(private val targetSampleRate: Int, private val maxOutp
     private var output = FloatArrayBuilder()
     private var resampler: MonoResampler? = null
     private var channels = 1
+    private var sourceRate = 0
     private var frame = FloatArray(1)
     private var carry = FloatArray(0)
     private var carried = 0
+
+    /** True once the codec's own output format has been applied, rather than the container's guess. */
+    private var authoritative = false
 
     val size: Int get() = output.size
     val isFull: Boolean get() = output.size >= maxOutputSamples
@@ -306,21 +313,50 @@ internal class DecodeSink(private val targetSampleRate: Int, private val maxOutp
      * looks to the analyzer exactly like a recording whose tempo and harmony are genuinely that far
      * off, because as far as the analyzer can tell, they are.
      *
-     * Once real audio has actually been produced under some configuration, that configuration is
-     * kept rather than reset — disturbing it would misalign or drop audio already decoded. In
-     * practice the decoder announces its real format before the first real buffer, so this only
-     * matters for the codecs, if any, that behave otherwise.
+     * Once real audio has been produced, a further *guess* is refused — disturbing the resampler
+     * would misalign or drop audio already decoded, and a container's second opinion is not worth
+     * that. The codec's own format is different in kind, and [authoritative] is what separates
+     * them. When it arrives late and disagrees, the audio decoded so far was decoded under an
+     * assumption now known to be wrong, so it is discarded and decoding restarts on the real
+     * format. That costs the handful of buffers a device emits before announcing itself; keeping
+     * them costs the whole file, because a wrong channel count packs two samples into one frame
+     * and a wrong sample rate scales the resampler's ratio — each of which lands as exactly the
+     * factor-of-two error that made a track report double its true tempo on one platform while
+     * reporting it correctly on another.
+     *
+     * The previous guard could not draw this distinction: it kept whichever format arrived before
+     * the first buffer, so a device that emits audio ahead of `INFO_OUTPUT_FORMAT_CHANGED` was
+     * locked to the container's declared values for the entire track.
      */
-    fun configure(channels: Int, sourceRate: Int, expectedOutputSamples: Int) {
-        if (resampler != null && output.size > 0) return
-        this.channels = channels.coerceAtLeast(1)
-        frame = FloatArray(this.channels)
-        carry = FloatArray(this.channels)
+    fun configure(
+        channels: Int,
+        sourceRate: Int,
+        expectedOutputSamples: Int,
+        authoritative: Boolean = false,
+    ) {
+        val requested = channels.coerceAtLeast(1)
+        // A guess never displaces what the codec itself has already said.
+        if (this.authoritative && !authoritative) return
+
+        if (resampler != null && output.size > 0) {
+            // Only the codec's own format may override a guess this late, and only the once.
+            if (!authoritative || this.authoritative) return
+            if (requested == this.channels && sourceRate == this.sourceRate) {
+                this.authoritative = true
+                return
+            }
+        }
+
+        this.channels = requested
+        this.sourceRate = sourceRate
+        this.authoritative = authoritative
+        frame = FloatArray(requested)
+        carry = FloatArray(requested)
         carried = 0
         // Sized from the track's duration so the buffer never doubles, which would briefly hold
         // both the old and the new array.
         output = FloatArrayBuilder(expectedOutputSamples.coerceAtLeast(1 shl 16))
-        resampler = MonoResampler(this.channels, sourceRate, targetSampleRate, output)
+        resampler = MonoResampler(requested, sourceRate, targetSampleRate, output)
     }
 
     fun append(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
