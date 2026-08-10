@@ -77,16 +77,16 @@ data class ChordTemplate(
         const val RootWeight = 1.75f
 
         /** The third or suspension establishes quality together with the root. */
-        const val DefiningWeight = 1.35f
+        const val DefiningWeight = 1.40f
 
         /** The fifth completes the structural triadic shell. */
-        const val FifthWeight = 1.15f
+        const val FifthWeight = 1.20f
 
         /** The named seventh is a major structural identifier, not weak upper color. */
-        const val SeventhWeight = 1.20f
+        const val SeventhWeight = 1.00f
 
         /** Ninths, elevenths, thirteenths, and other upper color have the least root authority. */
-        const val UpperColorWeight = 0.65f
+        const val UpperColorWeight = 0.55f
     }
 }
 

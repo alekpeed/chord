@@ -112,11 +112,21 @@ class ChordRecognizer(
         val emissions = rawObservations.mapIndexed { index, observation ->
             emissionScores(observation, priors, persistentSupport.getOrNull(index))
         }
-        val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, changeObservations))
+        val gatedChangeLikelihood = gateChangeLikelihood(changeLikelihood, changeObservations)
+        val path = viterbi(emissions, gatedChangeLikelihood)
         alignDelayedTransitions(path, spans, changeLikelihood)
         decodeStructuralRuns(path, changeObservations, bassObservations, priors)
+        confirmStructuralChanges(path, spans, changeObservations, gatedChangeLikelihood)
         val refined = refineSpans(spans, path, chroma, changeLikelihood)
-        val stableChords = enrichHarmonicRuns(path, changeObservations, preferFlats)
+        val colorFrames = bassReducedFrames(chroma, bassChroma, spans, persistentRoots)
+        val stableChords = ChordColorEnricher.enrich(
+            path = path,
+            spans = spans,
+            colorFrames = colorFrames,
+            hopSeconds = chroma.hopSeconds,
+            preferFlats = preferFlats,
+            enabled = extensionPenalty >= ColorEnrichmentPenaltyFloor,
+        )
 
         return refined.mapIndexed { index, (start, end) ->
             val state = path[index]
@@ -251,6 +261,74 @@ class ChordRecognizer(
         return (1f - dot).coerceIn(0f, 1f)
     }
 
+    /**
+     * Confirms a decoded structural change from duration and non-bass change evidence.
+     *
+     * This is a candidate-confirmation pass rather than a blanket minimum-duration filter. A weak
+     * candidate needs 650 ms of continuous dominance. Exceptionally clear upper-harmony movement
+     * can confirm after 350 ms, preserving two-chords-per-second passages. Until either condition
+     * is met, the established identity remains active; a short C7-Am-C7 sandwich therefore never
+     * becomes a displayed Am.
+     */
+    private fun confirmStructuralChanges(
+        path: IntArray,
+        spans: List<Pair<Long, Long>>,
+        upperObservations: List<FloatArray>,
+        changeLikelihood: FloatArray?,
+    ) {
+        if (path.size < 2) return
+        var established = path[0]
+        var index = 1
+        while (index < path.size) {
+            if (path[index] == established) {
+                index++
+                continue
+            }
+
+            val candidate = path[index]
+            var end = index + 1
+            while (end < path.size && path[end] == candidate) end++
+            if (candidate == ChordTemplates.NoChordIndex || established == ChordTemplates.NoChordIndex) {
+                established = candidate
+                index = end
+                continue
+            }
+
+            val durationMs = spans[end - 1].second - spans[index].first
+            val upperDistance = observationDistance(upperObservations[index - 1], upperObservations[index])
+            val novelty = changeLikelihood?.getOrNull(index) ?: 0f
+            val stronglyCorroborated = upperDistance >= StrongChangeDistance && novelty >= StrongChangeLikelihood
+            val confirmed = durationMs >= NormalConfirmationMs ||
+                (stronglyCorroborated && durationMs >= StrongConfirmationMs)
+
+            if (confirmed) {
+                established = candidate
+            } else {
+                for (span in index until end) path[span] = established
+            }
+            index = end
+        }
+    }
+
+    /** Per-frame bass reduction lets color persistence be measured instead of inferred from averages. */
+    private fun bassReducedFrames(
+        chroma: Chromagram,
+        bassChroma: Chromagram?,
+        spans: List<Pair<Long, Long>>,
+        persistentRoots: List<Int?>,
+    ): Array<FloatArray> {
+        var span = 0
+        return Array(chroma.frameCount) { frame ->
+            val timeMs = chroma.timeMsOfFrame(frame)
+            while (span < spans.lastIndex && spans[span + 1].first <= timeMs) span++
+            suppressBassInfluence(
+                observed = chroma.frames[frame],
+                bassObserved = bassChroma?.frames?.getOrNull(frame),
+                preservedPitchClass = persistentRoots.getOrNull(span),
+            )
+        }
+    }
+
     /** Bass is named only after harmonic identity is settled. */
     private fun inversionBass(
         chord: Chord,
@@ -345,7 +423,10 @@ class ChordRecognizer(
                 }
                 dot += observed[pc] * candidate.vector[pc] * weight
             }
-            scores[index] = dot * priors[index]
+            val unsupportedSeventh = candidate.template.seventh != SeventhType.NONE &&
+                !hasSeventhSupport(candidate, observed)
+            val evidencePenalty = if (unsupportedSeventh) UnsupportedSeventhPenalty else 0f
+            scores[index] = dot * priors[index] - structuralComplexityPenalty(candidate) - evidencePenalty
         }
         applyPersistentBassRootTieBreak(scores, observed, persistentBassSupport)
 
@@ -353,6 +434,18 @@ class ChordRecognizer(
         for (value in observed) energy += value * value
         scores[ChordTemplates.NoChordIndex] = if (energy < 1e-4f) 1f else noChordThreshold
         return scores
+    }
+
+    /**
+     * Dense normalized templates can match incidental notes without paying for the extra claim.
+     * Triads are the zero-complexity explanation; named sevenths and structurally altered shells
+     * must improve the acoustic fit enough to overcome these explicit margins.
+     */
+    private fun structuralComplexityPenalty(candidate: ChordTemplates.Candidate): Float {
+        var penalty = 0f
+        if (candidate.template.seventh != SeventhType.NONE) penalty += SeventhComplexityPenalty
+        if (candidate.template.alterations.any { it.degree <= 5 }) penalty += StructuralAlterationPenalty
+        return penalty
     }
 
     private fun applyPersistentBassRootTieBreak(
@@ -426,48 +519,6 @@ class ChordRecognizer(
         return intervals.any { Math.floorMod(candidate.root + it, 12) == pitchClass }
     }
 
-    /**
-     * A stable harmonic identity gets one aggregate color reading for its whole run. Color can make
-     * C7 become C7b9#11, but it cannot create a new row by itself.
-     */
-    private fun enrichHarmonicRuns(
-        path: IntArray,
-        observations: List<FloatArray>,
-        preferFlats: Boolean,
-    ): List<Chord?> {
-        val out = MutableList<Chord?>(path.size) { null }
-        var start = 0
-        while (start < path.size) {
-            val identity = harmonicIdentity(path[start])
-            var end = start + 1
-            while (end < path.size && harmonicIdentity(path[end]) == identity) end++
-
-            if (identity != null) {
-                val aggregate = FloatArray(12)
-                for (index in start until end) {
-                    for (pc in aggregate.indices) aggregate[pc] += observations[index][pc]
-                }
-                val normalized = Chromagram.normalize(aggregate)
-                val candidate = ChordTemplates.Candidates[path[start]]
-                val root = NoteSpelling.fromPitchClass(candidate.root, preferFlats)
-                val base = candidate.template.toChord(root).copy(
-                    extensions = emptySet(),
-                    alterations = candidate.template.alterations.filter { it.degree <= 5 }.toSet(),
-                    additions = emptySet(),
-                    bass = null,
-                ).normalized()
-                val colored = if (extensionPenalty >= ColorEnrichmentPenaltyFloor) {
-                    addStableColor(base, normalized)
-                } else {
-                    base
-                }
-                for (index in start until end) out[index] = colored
-            }
-            start = end
-        }
-        return out
-    }
-
     private data class HarmonicIdentity(
         val root: Int,
         val quality: ChordQuality,
@@ -488,88 +539,6 @@ class ChordRecognizer(
             suspensions = candidate.template.suspensions,
             structuralAlterations = candidate.template.alterations.filter { it.degree <= 5 }.toSet(),
         )
-    }
-
-    private fun addStableColor(base: Chord, observed: FloatArray): Chord {
-        val structural = base.copy(
-            extensions = emptySet(),
-            alterations = base.alterations.filter { it.degree <= 5 }.toSet(),
-            additions = emptySet(),
-            bass = null,
-        )
-        val structuralLevel = structural.pitchClasses()
-            .map { observed.getOrElse(it) { 0f } }
-            .average()
-            .toFloat()
-            .coerceAtLeast(1e-6f)
-        val threshold = maxOf(ColorAbsoluteFloor, structuralLevel * ColorRelativeFloor)
-
-        return if (base.seventh != SeventhType.NONE) {
-            addSeventhChordColor(base, observed, threshold)
-        } else {
-            addTriadColor(base, observed, threshold)
-        }
-    }
-
-    private fun addSeventhChordColor(base: Chord, observed: FloatArray, threshold: Float): Chord {
-        val root = base.root.pitchClass
-        val extensions = base.extensions.toMutableSet()
-        val alterations = base.alterations.filter { it.degree <= 5 }.toMutableSet()
-
-        fun support(interval: Int): Float = observed[Math.floorMod(root + interval, 12)]
-        fun choose(options: List<Pair<Int, Any>>): Any? = options
-            .filter { support(it.first) >= threshold }
-            .maxByOrNull { support(it.first) }
-            ?.second
-        fun addChoice(choice: Any?) {
-            when (choice) {
-                is Int -> extensions += choice
-                is Alteration -> alterations += choice
-            }
-        }
-
-        addChoice(
-            choose(
-                buildList {
-                    add(1 to Alteration.FLAT_NINE)
-                    add(2 to 9)
-                    if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.SUSPENDED) {
-                        add(3 to Alteration.SHARP_NINE)
-                    }
-                },
-            ),
-        )
-
-        addChoice(
-            choose(
-                buildList {
-                    if (base.quality != ChordQuality.SUSPENDED || 4 !in base.suspensions) add(5 to 11)
-                    if (base.quality != ChordQuality.DIMINISHED) add(6 to Alteration.SHARP_ELEVEN)
-                },
-            ),
-        )
-
-        if (!base.sixth) {
-            addChoice(
-                choose(
-                    buildList {
-                        if (base.quality != ChordQuality.AUGMENTED) add(8 to Alteration.FLAT_THIRTEEN)
-                        add(9 to 13)
-                    },
-                ),
-            )
-        }
-
-        return base.copy(extensions = extensions, alterations = alterations).normalized()
-    }
-
-    private fun addTriadColor(base: Chord, observed: FloatArray, threshold: Float): Chord {
-        if (base.quality != ChordQuality.MAJOR && base.quality != ChordQuality.MINOR) return base
-        val root = base.root.pitchClass
-        val additions = base.additions.toMutableSet()
-        if (observed[Math.floorMod(root + 2, 12)] >= threshold) additions += 9
-        if (observed[Math.floorMod(root + 5, 12)] >= threshold) additions += 11
-        return base.copy(additions = additions).normalized()
     }
 
     /** Only structural identity changes receive their own transition time. */
@@ -785,10 +754,17 @@ class ChordRecognizer(
         const val BassRootPreference = 1.08f
         const val BassPersistenceFloor = 0.25f
         const val SeventhSupportRatio = 0.35f
+        const val SeventhComplexityPenalty = 0.025f
+        const val UnsupportedSeventhPenalty = 0.075f
+        const val StructuralAlterationPenalty = 0.045f
         const val DetectedBoundaryAssociationMs = 350L
         const val ChangeRelief = 0.60f
         const val MinimumChangeCost = 0.15f
         const val FullChangeDistance = 0.12f
+        const val NormalConfirmationMs = 650L
+        const val StrongConfirmationMs = 350L
+        const val StrongChangeDistance = 0.32f
+        const val StrongChangeLikelihood = 0.65f
 
         const val TonicFit = 1.30f
         const val DominantFit = 1.20f
@@ -800,8 +776,6 @@ class ChordRecognizer(
         const val BassDominanceRatio = 1.5f
 
         const val ColorEnrichmentPenaltyFloor = 0.90f
-        const val ColorAbsoluteFloor = 0.20f
-        const val ColorRelativeFloor = 0.55f
 
         @Volatile
         var cachedRelatedness: Array<FloatArray>? = null
