@@ -131,6 +131,7 @@ class ChordRecognizer(
         alignDelayedTransitions(path, spans, changeLikelihood)
         decodeStructuralRuns(path, changeObservations, bassObservations, priors, emissions)
         StructuralTransitionGate.confirmStructuralChanges(path, spans, changeObservations, gatedChangeLikelihood, emissions)
+        StructuralTransitionGate.requireBassMovement(path, bassObservations?.map(::dominantPitchClass))
         StructuralTransitionGate.collapseSandwichNoise(path, spans, emissions)
         val refined = refineSpans(spans, path, chroma, changeLikelihood)
         val stableChords = ChordColorEnricher.enrich(
@@ -170,6 +171,10 @@ class ChordRecognizer(
     /**
      * A root has to persist into a neighboring analysis span before bass is allowed to influence root
      * identity. A walking line that changes every span therefore remains bass-only evidence.
+     *
+     * A span with no neighbor at all cannot be shown to be moving, so it is stationary by default.
+     * Requiring agreement that nothing can supply made the bass unusable on the only span of a
+     * short analysis, which is where a held bass is most obviously the root and least disputable.
      */
     private fun persistentBassRoots(bass: List<FloatArray>?): List<Int?> {
         if (bass == null) return emptyList()
@@ -178,7 +183,7 @@ class ChordRecognizer(
             val current = dominant[index] ?: return@map null
             val agreesBefore = index > 0 && dominant[index - 1] == current
             val agreesAfter = index + 1 < dominant.size && dominant[index + 1] == current
-            current.takeIf { agreesBefore || agreesAfter }
+            current.takeIf { agreesBefore || agreesAfter || dominant.size == 1 }
         }
     }
 
@@ -417,7 +422,7 @@ class ChordRecognizer(
             val evidencePenalty = if (unsupportedSeventh) UnsupportedSeventhPenalty else 0f
             scores[index] = dot * priors[index] - structuralComplexityPenalty(candidate) - evidencePenalty
         }
-        applyPersistentBassRootTieBreak(scores, observed, persistentBassSupport)
+        applyBassRootAuthority(scores, observed, persistentBassSupport)
 
         var energy = 0f
         for (value in observed) energy += value * value
@@ -437,30 +442,83 @@ class ChordRecognizer(
         return penalty
     }
 
-    private fun applyPersistentBassRootTieBreak(
+    /**
+     * The bass outranks the upper harmony, by a margin large enough to decide the answer.
+     *
+     * A held bass note is the single most reliable thing in a recording and the one the player can
+     * check the chart against by ear. Treating it as a mild tie-break — which is all it used to be
+     * — let rearranged upper voicings name chords over a bass that plainly disagreed with them.
+     *
+     * Two claims, in order of strength. A chord that does not contain the held bass note at all is
+     * not what is sounding, whatever its template says, and is pushed down hard. Among the chords
+     * that do contain it, being rooted on it is worth a real bonus, but only a bonus: a first
+     * inversion is a genuine and common thing, so Bm7 over a D still beats every name rooted on D
+     * when the upper harmony is Bm7. The bass decides which chords are admissible; it does not by
+     * itself dictate which of the admissible ones is written.
+     *
+     * Only a persistent bass earns this. A walking line never accumulates the neighboring-span
+     * agreement that [persistentBassSupport] requires, so a passing note cannot claim the chord.
+     */
+    private fun applyBassRootAuthority(
         scores: FloatArray,
         observed: FloatArray,
         persistentBassSupport: FloatArray?,
     ) {
         if (persistentBassSupport == null || persistentBassSupport.isEmpty()) return
-        val bestFullBand = ChordTemplates.Candidates.indices.maxOfOrNull { scores[it] } ?: return
-        if (bestFullBand <= 0f) return
+        var bassPitchClass = -1
+        var bassSupport = 0f
+        for (pc in 0 until 12) {
+            val support = persistentBassSupport[pc]
+            if (support > bassSupport) {
+                bassSupport = support
+                bassPitchClass = pc
+            }
+        }
+        if (bassPitchClass < 0 || bassSupport < BassRootSupportFloor) return
 
-        var promotedIndex = -1
+        for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
+            val tones = candidate.template.intervals
+                .map { Math.floorMod(candidate.root + it, 12) }
+                .toSet()
+            val rootSupport = persistentBassSupport.getOrElse(candidate.root) { 0f }
+            scores[index] += when {
+                // Measured per candidate root, not against one winner-takes-all bass note: the low
+                // band can carry two pitch classes at once, and a root the bass is holding must not
+                // lose its standing because some other tone measured marginally louder.
+                rootSupport >= BassRootSupportFloor -> rootSupport * BassRootBonus
+                bassPitchClass in tones -> 0f
+                else -> -bassSupport * BassForeignPenalty
+            }
+        }
+
+        promoteBassRootedSeventh(scores, observed, persistentBassSupport)
+    }
+
+    /**
+     * Breaks a close seventh-versus-subset tie with the sustained bass root, but only when the
+     * seventh is itself audible. This is what keeps Dm7 from collapsing into its own F-major
+     * subset, and a plain triad from being promoted to a seventh it never played.
+     */
+    private fun promoteBassRootedSeventh(
+        scores: FloatArray,
+        observed: FloatArray,
+        persistentBassSupport: FloatArray,
+    ) {
+        val best = ChordTemplates.Candidates.indices.maxOfOrNull { scores[it] } ?: return
+        if (best <= 0f) return
+        var promoted = -1
         var promotedEvidence = 0f
         for ((index, candidate) in ChordTemplates.Candidates.withIndex()) {
-            if (scores[index] < bestFullBand * BassTieBreakFloor) continue
+            if (scores[index] < best * BassTieBreakFloor) continue
             val support = persistentBassSupport.getOrElse(candidate.root) { 0f }
             if (support < BassRootSupportFloor || !hasSeventhSupport(candidate, observed)) continue
             val evidence = support * scores[index]
             if (evidence > promotedEvidence) {
                 promotedEvidence = evidence
-                promotedIndex = index
+                promoted = index
             }
         }
-        if (promotedIndex >= 0) {
-            scores[promotedIndex] = maxOf(scores[promotedIndex], bestFullBand * BassRootPreference)
-        }
+        if (promoted >= 0) scores[promoted] = maxOf(scores[promoted], best * BassRootPreference)
     }
 
     private fun hasSeventhSupport(candidate: ChordTemplates.Candidate, observed: FloatArray): Boolean {
@@ -738,9 +796,19 @@ class ChordRecognizer(
     private companion object {
         const val KeyPriorStrength = 0.9f
         const val StructuralScaleStrength = 0.22f
-        const val BassTieBreakFloor = 0.86f
         const val BassRootSupportFloor = 0.35f
+        const val BassTieBreakFloor = 0.86f
         const val BassRootPreference = 1.08f
+
+        /**
+         * Being rooted on the held bass breaks a tie and no more. Larger values were measured and
+         * rejected: at 0.30 the bass stops admitting chords and starts dictating them, which turns
+         * a Bm7 voiced over its own D into a bare D and is the opposite of the reported defect.
+         */
+        const val BassRootBonus = 0.06f
+
+        /** A chord that does not contain the held bass note is not the chord that is sounding. */
+        const val BassForeignPenalty = 0.60f
         const val BassPersistenceFloor = 0.25f
         const val SeventhSupportRatio = 0.35f
         const val SeventhComplexityPenalty = 0.025f

@@ -14,6 +14,57 @@ internal fun observationDistance(before: FloatArray, after: FloatArray): Float {
 internal object StructuralTransitionGate {
 
     /**
+     * Requires the bass to move before the harmony is allowed to.
+     *
+     * A new chord that nobody can hear the bottom of is the failure this exists for: the upper
+     * templates rearrange themselves over a held bass and the chart sprouts a row the player has
+     * no way to hear. Players locate a chord change by its bass. So a change of root now needs the
+     * low band to name a different note across the boundary, and a run whose bass never moves is
+     * folded back into the harmony it came from.
+     *
+     * This is the necessary half of the rule, not the sufficient half: bass motion alone still
+     * cannot create or rename a chord — a walking line under one harmony is averaged out long
+     * before this stage. Both directions hold, and they do not conflict. Bass must move for the
+     * harmony to move, and its moving is never on its own a reason to say it did.
+     *
+     * A span whose bass is too quiet to name counts as no evidence and therefore blocks the
+     * change. When there is no low band at all — bass tracking disabled, or a caller supplying
+     * none — the rule cannot be evaluated and stands down rather than freezing the whole chart on
+     * its opening chord.
+     */
+    fun requireBassMovement(path: IntArray, bassPitchClasses: List<Int?>?) {
+        if (bassPitchClasses == null || path.size < 2) return
+        var established = path[0]
+        var establishedBass = bassPitchClasses.getOrNull(0)
+        var index = 1
+        while (index < path.size) {
+            if (path[index] == established) {
+                // The bass under an unchanged chord is still the bass this chord is sitting on, so
+                // a later change is measured against where the line actually is, not where the
+                // chord started. Otherwise an inversion mid-chord would permanently unlock changes.
+                bassPitchClasses.getOrNull(index)?.let { establishedBass = it }
+                index++
+                continue
+            }
+
+            val candidate = path[index]
+            var end = index + 1
+            while (end < path.size && path[end] == candidate) end++
+
+            val movedTo = (index until end).firstNotNullOfOrNull { span ->
+                bassPitchClasses.getOrNull(span)?.takeIf { it != establishedBass }
+            }
+            if (movedTo != null) {
+                established = candidate
+                establishedBass = movedTo
+            } else {
+                for (span in index until end) path[span] = established
+            }
+            index = end
+        }
+    }
+
+    /**
      * Confirms a decoded structural change from duration, non-bass change evidence, and margin.
      *
      * This is a candidate-confirmation pass rather than a blanket minimum-duration filter. A weak
