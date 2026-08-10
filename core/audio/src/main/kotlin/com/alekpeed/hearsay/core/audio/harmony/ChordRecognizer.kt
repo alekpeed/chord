@@ -58,7 +58,10 @@ internal fun suppressBassInfluence(
 private const val BassMaskMaxSuppression = 0.90f
 private const val PersistentBassSuppression = 0.15f
 private const val BassMaskPresenceThreshold = 0.25f
-private const val BassOnlyChangeDistance = 0.28f
+
+// Synthetic and extracted walking-bass spans stay below 0.10 after low-band reduction, while even
+// closely related upper-shell changes exceed 0.20. Keep the boundary between those measured bands.
+private const val BassOnlyChangeDistance = 0.18f
 
 /**
  * Chord recognition whose state represents harmonic identity, not every spectral rearrangement.
@@ -95,8 +98,8 @@ class ChordRecognizer(
         val persistentRoots = persistentBassRoots(bassObservations)
         val persistentSupport = persistentBassSupport(bassObservations)
 
-        // Bass masking is deliberately limited to change gating. The raw harmonic chroma remains
-        // the source of chord identity and color so a real root is never subtracted from its chord.
+        // The raw view supplies frame-level evidence. The bass-reduced view corroborates structural
+        // regions and supplies color only after their identity has been decoded.
         val changeObservations = rawObservations.mapIndexed { index, observation ->
             suppressBassInfluence(
                 observed = observation,
@@ -111,9 +114,9 @@ class ChordRecognizer(
         }
         val path = viterbi(emissions, gateChangeLikelihood(changeLikelihood, changeObservations))
         alignDelayedTransitions(path, spans, changeLikelihood)
-        stabilizeBassOnlyTransitions(path, changeObservations, bassObservations)
+        decodeStructuralRuns(path, changeObservations, bassObservations, priors)
         val refined = refineSpans(spans, path, chroma, changeLikelihood)
-        val stableChords = enrichHarmonicRuns(path, rawObservations, preferFlats)
+        val stableChords = enrichHarmonicRuns(path, changeObservations, preferFlats)
 
         return refined.mapIndexed { index, (start, end) ->
             val state = path[index]
@@ -199,32 +202,53 @@ class ChordRecognizer(
     }
 
     /**
-     * Hard guard against bass-line chord churn. If the detected low bass moves but the
-     * bass-reduced upper harmony remains essentially the same, the harmonic state is not allowed
-     * to change. Applied after timing alignment so a timing correction cannot reintroduce it.
+     * Decodes one structural identity for each contiguous region of corroborating upper harmony.
+     *
+     * The frame decoder still sees full-band chroma so it does not lose a genuine root doubled in
+     * the bass. Its individual decisions are not authoritative, though: while the bass-reduced
+     * observations remain continuous, they are aggregated and scored once. A walking line is then
+     * averaged out instead of selecting a new root on every note. A genuinely short chord remains
+     * a separate region as soon as its non-bass shell changes.
      */
-    private fun stabilizeBassOnlyTransitions(
+    private fun decodeStructuralRuns(
         path: IntArray,
         bassReducedObservations: List<FloatArray>,
         bassObservations: List<FloatArray>?,
+        priors: FloatArray,
     ) {
-        if (bassObservations == null || path.size < 2) return
+        if (bassObservations == null || path.isEmpty()) return
         val limit = minOf(path.size, bassReducedObservations.size, bassObservations.size)
-        for (index in 1 until limit) {
-            if (path[index] == path[index - 1]) continue
-            val previousBass = dominantPitchClass(bassObservations[index - 1])
-            val currentBass = dominantPitchClass(bassObservations[index])
-            if (previousBass == null || currentBass == null || previousBass == currentBass) continue
-
-            var dot = 0f
-            for (pc in 0 until 12) {
-                dot += bassReducedObservations[index - 1][pc] * bassReducedObservations[index][pc]
-            }
-            val upperHarmonyDistance = (1f - dot).coerceIn(0f, 1f)
-            if (upperHarmonyDistance <= BassOnlyChangeDistance) {
-                path[index] = path[index - 1]
+        var runStart = 0
+        for (index in 1..limit) {
+            val continues = index < limit &&
+                observationDistance(bassReducedObservations[index - 1], bassReducedObservations[index]) <=
+                BassOnlyChangeDistance
+            if (!continues) {
+                val movingBass = (runStart until index)
+                    .mapNotNull { span -> dominantPitchClass(bassObservations[span]) }
+                    .distinct()
+                    .size > 1
+                if (!movingBass) {
+                    runStart = index
+                    continue
+                }
+                val aggregate = FloatArray(Chromagram.PitchClasses)
+                for (span in runStart until index) {
+                    for (pc in aggregate.indices) aggregate[pc] += bassReducedObservations[span][pc]
+                }
+                val scores = emissionScores(Chromagram.normalize(aggregate), priors, null)
+                var best = 0
+                for (state in 1 until scores.size) if (scores[state] > scores[best]) best = state
+                for (span in runStart until index) path[span] = best
+                runStart = index
             }
         }
+    }
+
+    private fun observationDistance(before: FloatArray, after: FloatArray): Float {
+        var dot = 0f
+        for (pc in 0 until Chromagram.PitchClasses) dot += before[pc] * after[pc]
+        return (1f - dot).coerceIn(0f, 1f)
     }
 
     /** Bass is named only after harmonic identity is settled. */
