@@ -11,6 +11,7 @@ import kotlin.math.max
 /** Adds only persistent upper color after the structural Viterbi state is settled. */
 internal object ChordColorEnricher {
 
+    @Suppress("LongParameterList")
     fun enrich(
         path: IntArray,
         spans: List<Pair<Long, Long>>,
@@ -18,6 +19,7 @@ internal object ChordColorEnricher {
         hopSeconds: Double,
         preferFlats: Boolean,
         enabled: Boolean,
+        trace: ChordDecisionTrace? = null,
     ): List<Chord?> {
         val out = MutableList<Chord?>(path.size) { null }
         var start = 0
@@ -36,13 +38,17 @@ internal object ChordColorEnricher {
                     bass = null,
                 ).normalized()
                 val frames = framesBetween(colorFrames, spans[start].first, spans[end - 1].second, hopSeconds)
-                val colored = if (enabled) addStableColor(base, frames) else base
+                val run = Run(spans[start].first, spans[end - 1].second, trace)
+                val colored = if (enabled) addStableColor(base, frames, run) else base
                 for (index in start until end) out[index] = colored
             }
             start = end
         }
         return out
     }
+
+    /** One structural run being colored, with somewhere to explain each decision. */
+    private class Run(val startMs: Long, val endMs: Long, val trace: ChordDecisionTrace?)
 
     private fun framesBetween(
         frames: Array<FloatArray>,
@@ -70,7 +76,7 @@ internal object ChordColorEnricher {
         val persistenceFloor: Float,
     )
 
-    private fun addStableColor(base: Chord, frames: List<FloatArray>): Chord {
+    private fun addStableColor(base: Chord, frames: List<FloatArray>, run: Run): Chord {
         if (frames.size < MinimumFrames) return base
         val structural = base.copy(
             extensions = emptySet(),
@@ -97,14 +103,18 @@ internal object ChordColorEnricher {
             persistence = FloatArray(Chromagram.PitchClasses) { persistentCounts[it].toFloat() / frames.size },
             structuralLevel = structuralLevel,
         )
-        return if (base.seventh != SeventhType.NONE) addSeventhColor(base, evidence) else addTriadColor(base, evidence)
+        return if (base.seventh != SeventhType.NONE) {
+            addSeventhColor(base, evidence, run)
+        } else {
+            addTriadColor(base, evidence, run)
+        }
     }
 
-    private fun addSeventhColor(base: Chord, evidence: Evidence): Chord {
+    private fun addSeventhColor(base: Chord, evidence: Evidence, run: Run): Chord {
         val extensions = base.extensions.toMutableSet()
         val alterations = base.alterations.filter { it.degree <= 5 }.toMutableSet()
 
-        fun choose(options: List<Option>): Any? = options.filter { supported(base, evidence, it) }
+        fun choose(options: List<Option>): Any? = options.filter { supported(base, evidence, it, run) }
             .maxByOrNull { option ->
                 support(base, evidence, option.interval) - evidence.structuralLevel * option.relativeMargin
             }?.value
@@ -145,21 +155,36 @@ internal object ChordColorEnricher {
         add(Option(9, 13, ThirteenthMargin, ThirteenthPersistence))
     }
 
-    private fun supported(base: Chord, evidence: Evidence, option: Option): Boolean {
+    private fun supported(base: Chord, evidence: Evidence, option: Option, run: Run): Boolean {
         val pitchClass = Math.floorMod(base.root.pitchClass + option.interval, 12)
         val threshold = max(AbsoluteFloor, evidence.structuralLevel * option.relativeMargin)
-        return evidence.aggregate[pitchClass] >= threshold &&
+        val supported = evidence.aggregate[pitchClass] >= threshold &&
             evidence.persistence[pitchClass] >= option.persistenceFloor
+        run.trace?.onColor(
+            run.startMs,
+            run.endMs,
+            String.format(
+                java.util.Locale.US,
+                "color %s: support %.2f (required %.2f), persistence %.2f (required %.2f) -> %s",
+                option.value,
+                evidence.aggregate[pitchClass],
+                threshold,
+                evidence.persistence[pitchClass],
+                option.persistenceFloor,
+                if (supported) "kept for ranking" else "eliminated to parent",
+            ),
+        )
+        return supported
     }
 
     private fun support(base: Chord, evidence: Evidence, interval: Int): Float =
         evidence.aggregate[Math.floorMod(base.root.pitchClass + interval, 12)]
 
-    private fun addTriadColor(base: Chord, evidence: Evidence): Chord {
+    private fun addTriadColor(base: Chord, evidence: Evidence, run: Run): Chord {
         if (base.quality != ChordQuality.MAJOR && base.quality != ChordQuality.MINOR) return base
         val additions = base.additions.toMutableSet()
-        if (supported(base, evidence, Option(2, 9, TriadNinthMargin, NinthPersistence))) additions += 9
-        if (supported(base, evidence, Option(5, 11, TriadEleventhMargin, EleventhPersistence))) additions += 11
+        if (supported(base, evidence, Option(2, 9, TriadNinthMargin, NinthPersistence), run)) additions += 9
+        if (supported(base, evidence, Option(5, 11, TriadEleventhMargin, EleventhPersistence), run)) additions += 11
         return base.copy(additions = additions).normalized()
     }
 

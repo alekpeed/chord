@@ -78,6 +78,7 @@ class ChordRecognizer(
     private val emissionSharpness: Float = 7.5f,
     private val slashChords: Boolean = true,
     private val extensionPenalty: Float = 1f,
+    private val trace: ChordDecisionTrace? = null,
 ) {
 
     fun recognize(
@@ -112,13 +113,26 @@ class ChordRecognizer(
         val emissions = rawObservations.mapIndexed { index, observation ->
             emissionScores(observation, priors, persistentSupport.getOrNull(index))
         }
+        val colorFrames = bassReducedFrames(chroma, bassChroma, spans, persistentRoots)
+        // Generate broadly, eliminate aggressively: every candidate was scored above, and any that
+        // fails a required musical condition is now removed before decoding chooses among them.
+        ChordCandidateGate.eliminateUnsupportedCandidates(
+            emissions = emissions,
+            spans = spans,
+            rawAggregates = rawObservations,
+            reducedAggregates = changeObservations,
+            frames = chroma.frames,
+            persistentBass = persistentSupport,
+            hopSeconds = chroma.hopSeconds,
+            trace = trace,
+        )
         val gatedChangeLikelihood = gateChangeLikelihood(changeLikelihood, changeObservations)
         val path = viterbi(emissions, gatedChangeLikelihood)
         alignDelayedTransitions(path, spans, changeLikelihood)
-        decodeStructuralRuns(path, changeObservations, bassObservations, priors)
-        confirmStructuralChanges(path, spans, changeObservations, gatedChangeLikelihood)
+        decodeStructuralRuns(path, changeObservations, bassObservations, priors, emissions)
+        StructuralTransitionGate.confirmStructuralChanges(path, spans, changeObservations, gatedChangeLikelihood, emissions)
+        StructuralTransitionGate.collapseSandwichNoise(path, spans, emissions)
         val refined = refineSpans(spans, path, chroma, changeLikelihood)
-        val colorFrames = bassReducedFrames(chroma, bassChroma, spans, persistentRoots)
         val stableChords = ChordColorEnricher.enrich(
             path = path,
             spans = spans,
@@ -126,6 +140,7 @@ class ChordRecognizer(
             hopSeconds = chroma.hopSeconds,
             preferFlats = preferFlats,
             enabled = extensionPenalty >= ColorEnrichmentPenaltyFloor,
+            trace = trace,
         )
 
         return refined.mapIndexed { index, (start, end) ->
@@ -218,13 +233,16 @@ class ChordRecognizer(
      * the bass. Its individual decisions are not authoritative, though: while the bass-reduced
      * observations remain continuous, they are aggregated and scored once. A walking line is then
      * averaged out instead of selecting a new root on every note. A genuinely short chord remains
-     * a separate region as soon as its non-bass shell changes.
+     * a separate region as soon as its non-bass shell changes. A candidate the gate eliminated
+     * across the run stays eliminated: this pass may not reintroduce what validation rejected.
      */
+    @Suppress("LongParameterList")
     private fun decodeStructuralRuns(
         path: IntArray,
         bassReducedObservations: List<FloatArray>,
         bassObservations: List<FloatArray>?,
         priors: FloatArray,
+        emissions: List<FloatArray>,
     ) {
         if (bassObservations == null || path.isEmpty()) return
         val limit = minOf(path.size, bassReducedObservations.size, bassObservations.size)
@@ -247,67 +265,38 @@ class ChordRecognizer(
                     for (pc in aggregate.indices) aggregate[pc] += bassReducedObservations[span][pc]
                 }
                 val scores = emissionScores(Chromagram.normalize(aggregate), priors, null)
-                var best = 0
-                for (state in 1 until scores.size) if (scores[state] > scores[best]) best = state
+                val best = bestSurvivingState(scores, emissions, runStart, index)
                 for (span in runStart until index) path[span] = best
                 runStart = index
             }
         }
     }
 
-    private fun observationDistance(before: FloatArray, after: FloatArray): Float {
-        var dot = 0f
-        for (pc in 0 until Chromagram.PitchClasses) dot += before[pc] * after[pc]
-        return (1f - dot).coerceIn(0f, 1f)
-    }
-
     /**
-     * Confirms a decoded structural change from duration and non-bass change evidence.
-     *
-     * This is a candidate-confirmation pass rather than a blanket minimum-duration filter. A weak
-     * candidate needs 650 ms of continuous dominance. Exceptionally clear upper-harmony movement
-     * can confirm after 350 ms, preserving two-chords-per-second passages. Until either condition
-     * is met, the established identity remains active; a short C7-Am-C7 sandwich therefore never
-     * becomes a displayed Am.
+     * The best aggregate score among states the gate left standing over the run. A state whose
+     * per-span emissions sit far below the best mean was eliminated for most of the run, and a
+     * post-processing pass has no authority to resurrect it.
      */
-    private fun confirmStructuralChanges(
-        path: IntArray,
-        spans: List<Pair<Long, Long>>,
-        upperObservations: List<FloatArray>,
-        changeLikelihood: FloatArray?,
-    ) {
-        if (path.size < 2) return
-        var established = path[0]
-        var index = 1
-        while (index < path.size) {
-            if (path[index] == established) {
-                index++
-                continue
-            }
-
-            val candidate = path[index]
-            var end = index + 1
-            while (end < path.size && path[end] == candidate) end++
-            if (candidate == ChordTemplates.NoChordIndex || established == ChordTemplates.NoChordIndex) {
-                established = candidate
-                index = end
-                continue
-            }
-
-            val durationMs = spans[end - 1].second - spans[index].first
-            val upperDistance = observationDistance(upperObservations[index - 1], upperObservations[index])
-            val novelty = changeLikelihood?.getOrNull(index) ?: 0f
-            val stronglyCorroborated = upperDistance >= StrongChangeDistance && novelty >= StrongChangeLikelihood
-            val confirmed = durationMs >= NormalConfirmationMs ||
-                (stronglyCorroborated && durationMs >= StrongConfirmationMs)
-
-            if (confirmed) {
-                established = candidate
-            } else {
-                for (span in index until end) path[span] = established
-            }
-            index = end
+    private fun bestSurvivingState(
+        scores: FloatArray,
+        emissions: List<FloatArray>,
+        runStart: Int,
+        runEnd: Int,
+    ): Int {
+        val means = FloatArray(ChordTemplates.StateCount)
+        var bestMean = Float.NEGATIVE_INFINITY
+        for (state in 0 until ChordTemplates.StateCount) {
+            var total = 0f
+            for (span in runStart until runEnd) total += emissions[span][state]
+            means[state] = total / (runEnd - runStart)
+            if (means[state] > bestMean) bestMean = means[state]
         }
+        var best = -1
+        for (state in 0 until ChordTemplates.StateCount) {
+            if (means[state] < bestMean - EliminatedRunTolerance) continue
+            if (best < 0 || scores[state] > scores[best]) best = state
+        }
+        return if (best >= 0) best else scores.indices.maxBy { scores[it] }
     }
 
     /** Per-frame bass reduction lets color persistence be measured instead of inferred from averages. */
@@ -761,10 +750,9 @@ class ChordRecognizer(
         const val ChangeRelief = 0.60f
         const val MinimumChangeCost = 0.15f
         const val FullChangeDistance = 0.12f
-        const val NormalConfirmationMs = 650L
-        const val StrongConfirmationMs = 350L
-        const val StrongChangeDistance = 0.32f
-        const val StrongChangeLikelihood = 0.65f
+
+        /** Half the gate's elimination penalty: eliminated for most of a run means still eliminated. */
+        const val EliminatedRunTolerance = 2f
 
         const val TonicFit = 1.30f
         const val DominantFit = 1.20f
