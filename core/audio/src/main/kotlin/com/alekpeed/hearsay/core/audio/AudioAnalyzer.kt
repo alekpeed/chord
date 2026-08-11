@@ -105,6 +105,18 @@ data class AnalysisSettings(
     val fftSize: Int = Spectrogram.DefaultFftSize,
     val hopSize: Int = Spectrogram.DefaultHopSize,
     val detail: ChartDetail = ChartDetail.STANDARD,
+    /**
+     * Names inversions regardless of what [detail] would choose, or leaves that choice alone when
+     * null.
+     *
+     * A diagnostic rather than a preference. How often a recording inverts is not known for any
+     * real library here, and it decides whether treating the bass as the root outright would help
+     * or hurt: a chart that comes back full of slash chords is one where that change would rename
+     * a great many chords wrongly. Asking the question needs slash chords on without also moving
+     * the extension penalty and the minimum chord length, which picking [ChartDetail.FULL] would
+     * do — three variables moving at once answers nothing.
+     */
+    val slashChords: Boolean? = null,
 ) {
     companion object {
         val Fast = AnalysisSettings(
@@ -138,7 +150,7 @@ class AudioAnalyzer(
     // Detail is a property of the chart being produced, so the recognizer is built from the same
     // settings rather than handed in already configured and possibly disagreeing with them.
     private val recognizer: ChordRecognizer = recognizer ?: ChordRecognizer(
-        slashChords = settings.detail.slashChords,
+        slashChords = settings.slashChords ?: settings.detail.slashChords,
         extensionPenalty = settings.detail.extensionPenalty,
     )
 

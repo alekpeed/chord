@@ -20,7 +20,14 @@ Options
     --profile <name>      fast | balanced | maximum    (default: maximum)
     --text                also write a readable lead sheet
     --force               re-analyze files that already have a chart
+    --slash-chords        name inversions (C/E) whatever the profile would do
+    --no-slash-chords     never name them, likewise
     --help
+
+--slash-chords answers one question: how often does this recording put something other than the
+root in the bass? Run a track with and without it and compare. A chart that gains a lot of slash
+chords is a recording where taking the bass to be the root would rename many chords wrongly, and
+one that gains almost none is a recording where it would be nearly free.
 
 The chart is written as <name>.hearsay.json. Copy it to the tablet and open the song, then
 "Import a chart" on the analysis screen.
@@ -50,6 +57,7 @@ private fun parse(args: Array<String>): Options? {
     var profileName = "maximum"
     var writeText = false
     var force = false
+    var slashChords: Boolean? = null
 
     var index = 0
     while (index < args.size) {
@@ -58,6 +66,8 @@ private fun parse(args: Array<String>): Options? {
             "--profile" -> profileName = args.getOrElse(++index) { fail("--profile needs a name") }
             "--text" -> writeText = true
             "--force" -> force = true
+            "--slash-chords" -> slashChords = true
+            "--no-slash-chords" -> slashChords = false
             else -> {
                 if (argument.startsWith("-")) fail("Unknown option: $argument")
                 inputs += File(argument)
@@ -69,12 +79,15 @@ private fun parse(args: Array<String>): Options? {
     if (inputs.isEmpty()) fail("Nothing to analyze. Pass a file or a folder.")
     inputs.firstOrNull { !it.exists() }?.let { fail("No such file or folder: $it") }
 
-    val settings = when (profileName.lowercase()) {
+    val profile = when (profileName.lowercase()) {
         "fast" -> AnalysisSettings.Fast
         "balanced" -> AnalysisSettings.Balanced
         "maximum", "max" -> AnalysisSettings.MaximumQuality
         else -> fail("Unknown profile '$profileName'. Use fast, balanced or maximum.")
     }
+    // Copied over the profile rather than folded into it, so the profile still means what it says
+    // and the only thing this flag changes is whether inversions are named.
+    val settings = profile.copy(slashChords = slashChords)
 
     return Options(inputs, outputDirectory, settings, profileName.lowercase(), writeText, force)
 }
