@@ -417,9 +417,25 @@ def split_stems(midi_path: Path, out_dir: Path) -> list[Path]:
     return written
 
 
-def render(midi_path: Path, wav_path: Path, soundfont: Path, sample_rate: int = 44_100) -> None:
-    wav_path.parent.mkdir(parents=True, exist_ok=True)
+#: Audio formats worth writing a corpus in. Both are lossless; only the size differs.
+#:
+#: FLAC decodes to PCM identical to the WAV it came from — verified byte for byte, and the
+#: analyzer returns the same chart from either — at roughly a third of the size. A corpus in every
+#: key runs to gigabytes as WAV, and none of those bytes buy anything.
+AUDIO_FORMATS = ("flac", "wav")
+
+
+def render(
+    midi_path: Path,
+    audio_path: Path,
+    soundfont: Path,
+    sample_rate: int = 44_100,
+    audio_format: str = "flac",
+) -> None:
+    if audio_format not in AUDIO_FORMATS:
+        raise ValueError(f"Not a supported format: {audio_format}")
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
     _run([
-        "fluidsynth", "-ni", "-F", str(wav_path), "-r", str(sample_rate),
-        str(soundfont), str(midi_path),
+        "fluidsynth", "-ni", "-T", audio_format, "-F", str(audio_path),
+        "-r", str(sample_rate), str(soundfont), str(midi_path),
     ])

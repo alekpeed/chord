@@ -81,6 +81,10 @@ bar a whole beat before the chart says it starts. So every track is read back an
 the chart that made it, and one whose audio disagrees with its label is refused rather than
 written with a warning. The reasons land in `rejected.txt`; each is a chart or a groove to fix.
 
+Audio is written as FLAC. It decodes to PCM byte-identical to the WAV it would otherwise be — the
+analyzer returns the same chart from either — at about a third of the size, and a corpus in all
+twelve keys with stems runs to gigabytes as WAV. `--format wav` if you want it anyway.
+
 `--stems` additionally writes each instrument on its own. These are not separated audio and carry
 none of the artifacts that word implies: the parts were never mixed, so the stems are exact,
 sample-aligned, and sum back to the mix. That is what makes them worth having for testing whether

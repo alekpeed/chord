@@ -123,6 +123,12 @@ def main() -> int:
     parser.add_argument("--keys", type=int, default=12, help="how many of the 12 keys to render")
     parser.add_argument("--repeats", type=int, default=4, help="times each progression repeats")
     parser.add_argument("--stems", action="store_true", help="also write per-instrument audio")
+    parser.add_argument(
+        "--format",
+        choices=generate.AUDIO_FORMATS,
+        default="flac",
+        help="lossless either way; FLAC is about a third the size and decodes identically",
+    )
     parser.add_argument("--limit", type=int, default=0, help="stop after N tracks, for a trial")
     parser.add_argument(
         "--allow-extra-tones",
@@ -165,13 +171,19 @@ def main() -> int:
                 rejected.append(f"{chart.name}: " + "; ".join(problems))
                 continue
 
-            generate.render(midi, audio_dir / f"{chart.name}.wav", args.soundfont)
+            target = audio_dir / f"{chart.name}.{args.format}"
+            generate.render(midi, target, args.soundfont, audio_format=args.format)
             (annotation_dir / f"{chart.name}.lab").write_text(chart.lab_text(), encoding="utf-8")
 
             if args.stems:
                 stem_dir = args.out / "stems" / chart.name
                 for stem_midi in generate.split_stems(midi, work_dir / chart.name):
-                    generate.render(stem_midi, stem_dir / f"{stem_midi.stem}.wav", args.soundfont)
+                    generate.render(
+                        stem_midi,
+                        stem_dir / f"{stem_midi.stem}.{args.format}",
+                        args.soundfont,
+                        audio_format=args.format,
+                    )
 
             written += 1
             print(f"  ✓ {chart.name}  ({chart.duration:.1f}s, {len(chart.spans())} chords)")
