@@ -148,21 +148,34 @@ internal object ChordColorEnricher {
      *
      * So the vocabulary is now functional, encoding what players actually voice:
      *
-     *  - Natural ninths sit on any seventh chord: 9, m9, maj9 are all ordinary.
+     *  - Natural ninths sit on any seventh chord outside the diminished family: 9, m9, maj9 are
+     *    all ordinary. On m7b5 and dim7 the plain scale tone is the flat nine, and the natural
+     *    nine is the exotic locrian-natural-2 color — a produced chart almost never means it, so
+     *    diminished-family chords take no ninth at all.
      *  - Altered ninths (b9, #9) belong to dominants, where they are the ordinary altered colors.
+     *    The sharp nine needs a major third to alter against, so among the altered colors a sus
+     *    dominant takes only b9 (7sus4b9, the phrygian sus) — on a thirdless chord the "#9" pitch
+     *    class is simply the minor third, and the honest symbol is m7.
      *  - The natural eleventh belongs to minor chords (m11); over a major third it is the textbook
      *    avoid note, which players resolve by sharpening it or suspending the third.
-     *  - The sharp eleventh belongs to dominants (7#11) and major sevenths (maj7#11, the lydian
-     *    color) — the two places it is genuinely voiced.
+     *  - The sharp eleventh belongs to dominants with their third (7#11) and major sevenths
+     *    (maj7#11, the lydian color) — the two places it is genuinely voiced. On a sus chord it
+     *    sits a semitone above the structural suspended fourth, the same clash that bans the
+     *    natural eleventh over a major third.
      *  - Thirteenths, natural and flat, belong to dominants. Minor and major thirteenths exist in
      *    theory and books; on a chart produced from a mixed recording they are overwhelmingly
      *    misreadings, and a rare true one costs less to under-name than a stream of false ones
      *    costs to trust.
      */
     private fun ninthOptions(base: Chord): List<Option> = buildList {
-        add(Option(2, 9, NinthMargin, NinthPersistence))
+        if (base.quality != ChordQuality.DIMINISHED) {
+            add(Option(2, 9, NinthMargin, NinthPersistence))
+        }
         if (base.isDominant) {
             add(Option(1, Alteration.FLAT_NINE, AlteredMargin, AlteredPersistence))
+        }
+        // #9 needs a major third to alter against; on a sus dominant interval 3 is the minor third.
+        if (base.quality == ChordQuality.MAJOR && base.seventh == SeventhType.MINOR) {
             add(Option(3, Alteration.SHARP_NINE, AlteredMargin, AlteredPersistence))
         }
     }
@@ -171,7 +184,10 @@ internal object ChordColorEnricher {
         if (base.quality == ChordQuality.MINOR) {
             add(Option(5, 11, EleventhMargin, EleventhPersistence))
         }
-        if (base.isDominant || (base.quality == ChordQuality.MAJOR && base.seventh == SeventhType.MAJOR)) {
+        // #11 needs a major third below it; on a sus chord it clashes with the structural fourth.
+        if (base.quality == ChordQuality.MAJOR &&
+            (base.seventh == SeventhType.MINOR || base.seventh == SeventhType.MAJOR)
+        ) {
             add(Option(6, Alteration.SHARP_ELEVEN, AlteredEleventhMargin, AlteredPersistence))
         }
     }

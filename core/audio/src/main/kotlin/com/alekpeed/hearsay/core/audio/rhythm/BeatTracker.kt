@@ -712,7 +712,13 @@ data class TrackedBeat(val frame: Int, val detected: Boolean)
  * weighting, so the weights mean what they say, and harmonic change outvotes accent rather than
  * the other way around. Accent still breaks ties: when harmony moves every half bar — changes on
  * one and three alike — the accent pattern is what separates the two, and there it can help
- * without being able to overrule.
+ * without being able to overrule. A change stream whose mean sits below an absolute floor is
+ * chroma jitter rather than evidence, and is dropped instead of being amplified to a vote.
+ *
+ * The meter estimate is judged by the same normalized mix. It once scored bar-line contrast on
+ * the raw streams while taking each candidate's phase from the normalized ones, and the two
+ * disagreed: on a backbeat groove the harmony-chosen phase puts bar lines on the quiet beats,
+ * the raw accent contrast collapsed, and a plain 4/4 song was reported in 6.
  */
 object DownbeatEstimator {
 
@@ -725,6 +731,50 @@ object DownbeatEstimator {
     /** Harmonic change against onset accent, after each is normalized to its own mean. */
     private const val ChangeToAccentWeight = 3f
 
+    /**
+     * Mean chord-change strength below which the stream is chroma jitter, not evidence.
+     *
+     * Change strength is one minus the cosine similarity of adjacent beat-averaged chroma, so its
+     * absolute scale means something: a real chord change reads at or above roughly 0.15, and
+     * numeric wobble on a held chord at or below roughly 0.01. Normalizing a jitter-only stream to
+     * a mean of one would hand noise a three-to-one vote against real accents. 0.005 sits below
+     * every real change and above the wobble — a single real change in a sixteen-beat stretch
+     * (0.3 / 16 ≈ 0.019) still clears it. The onset stream gets no such floor: its units are
+     * arbitrary, so an absolute threshold there would be unprincipled.
+     */
+    private const val ChangeEvidenceFloor = 0.005f
+
+    /**
+     * One strength per beat of the stretch: normalized onset accent plus weighted normalized
+     * harmonic change.
+     *
+     * Both the phase choice and the meter choice score against this array. Each stream is
+     * normalized to its own mean over the stretch so [ChangeToAccentWeight] compares like with
+     * like; a stream carrying no evidence contributes nothing rather than amplified noise.
+     */
+    private fun beatStrengths(
+        beatFrames: List<Int>,
+        envelope: OnsetEnvelope,
+        chordChangeStrength: FloatArray?,
+        from: Int,
+        to: Int,
+    ): FloatArray {
+        var onsetTotal = 0f
+        var changeTotal = 0f
+        for (index in from until to) {
+            onsetTotal += envelope.values.getOrElse(beatFrames[index]) { 0f }
+            changeTotal += chordChangeStrength?.getOrElse(index) { 0f } ?: 0f
+        }
+        val count = (to - from).toFloat()
+        val onsetScale = if (onsetTotal > 1e-6f) count / onsetTotal else 0f
+        val changeScale = if (changeTotal / count >= ChangeEvidenceFloor) count / changeTotal else 0f
+        return FloatArray(to - from) { offset ->
+            val index = from + offset
+            onsetScale * envelope.values.getOrElse(beatFrames[index]) { 0f } +
+                ChangeToAccentWeight * changeScale * (chordChangeStrength?.getOrElse(index) { 0f } ?: 0f)
+        }
+    }
+
     fun estimate(
         beatFrames: List<Int>,
         envelope: OnsetEnvelope,
@@ -734,37 +784,31 @@ object DownbeatEstimator {
         to: Int = beatFrames.size,
     ): Int {
         if (from >= to || beatsPerMeasure <= 1) return 0
+        return bestPhase(beatStrengths(beatFrames, envelope, chordChangeStrength, from, to), beatsPerMeasure)
+    }
 
-        // Normalize each stream over this stretch so the weights compare like with like. A mean
-        // of zero means the stream carries no evidence here and contributes nothing.
-        var onsetTotal = 0f
-        var changeTotal = 0f
-        for (index in from until to) {
-            onsetTotal += envelope.values.getOrElse(beatFrames[index]) { 0f }
-            changeTotal += chordChangeStrength?.getOrElse(index) { 0f } ?: 0f
-        }
-        val count = (to - from).toFloat()
-        val onsetScale = if (onsetTotal > 1e-6f) count / onsetTotal else 0f
-        val changeScale = if (changeTotal > 1e-6f) count / changeTotal else 0f
-
-        var bestPhase = 0
+    /**
+     * The phase whose beats carry the most strength per member. When the stretch is not a whole
+     * number of bars the low phases hold one beat more than the high ones, and every strength is
+     * non-negative, so comparing sums would hand them a head start regardless of evidence.
+     */
+    private fun bestPhase(strengths: FloatArray, beatsPerMeasure: Int): Int {
+        var best = 0
         var bestScore = Float.NEGATIVE_INFINITY
-
         for (phase in 0 until beatsPerMeasure) {
-            var score = 0f
-            for (index in from until to) {
-                if ((index - from - phase).mod(beatsPerMeasure) != 0) continue
-                score += onsetScale * envelope.values.getOrElse(beatFrames[index]) { 0f }
-                if (chordChangeStrength != null) {
-                    score += ChangeToAccentWeight * changeScale * chordChangeStrength.getOrElse(index) { 0f }
-                }
+            var total = 0f
+            var members = 0
+            for (index in phase until strengths.size step beatsPerMeasure) {
+                total += strengths[index]
+                members++
             }
+            val score = total / max(1, members)
             if (score > bestScore) {
                 bestScore = score
-                bestPhase = phase
+                best = phase
             }
         }
-        return bestPhase
+        return best
     }
 
     /**
@@ -825,21 +869,28 @@ object DownbeatEstimator {
         chordChangeStrength: FloatArray?,
     ): Int {
         if (beatFrames.size < 8) return 4
+        // The same normalized mix the phase was chosen by. Judging the contrast on a different
+        // blend than the one that placed the bar lines let a candidate's harmony-chosen phase
+        // land on beats the raw blend called quiet, and its contrast collapse for it.
+        val strengths = beatStrengths(beatFrames, envelope, chordChangeStrength, 0, beatFrames.size)
         var best = 4
         var bestScore = Float.NEGATIVE_INFINITY
         for (candidate in listOf(4, 3, 6)) {
-            val phase = estimate(beatFrames, envelope, chordChangeStrength, candidate)
+            val phase = bestPhase(strengths, candidate)
             var onBar = 0f
+            var onBarCount = 0
             var offBar = 0f
-            for ((index, frame) in beatFrames.withIndex()) {
-                val strength = envelope.values.getOrElse(frame) { 0f } +
-                    2.5f * (chordChangeStrength?.getOrElse(index) { 0f } ?: 0f)
-                if ((index - phase).mod(candidate) == 0) onBar += strength else offBar += strength
+            for (index in strengths.indices) {
+                if ((index - phase).mod(candidate) == 0) {
+                    onBar += strengths[index]
+                    onBarCount++
+                } else {
+                    offBar += strengths[index]
+                }
             }
-            val bars = max(1, beatFrames.size / candidate)
-            val others = max(1, beatFrames.size - bars)
-            // Contrast between bar lines and everything else, normalized by how many of each.
-            val contrast = onBar / bars - offBar / others
+            // Contrast between bar lines and everything else, each averaged over its actual
+            // members — a stretch that is not a whole number of bars must not inflate either mean.
+            val contrast = onBar / max(1, onBarCount) - offBar / max(1, strengths.size - onBarCount)
             // A mild preference for four breaks ties without overriding real evidence.
             val score = contrast * if (candidate == 4) 1.08f else 1f
             if (score > bestScore) {

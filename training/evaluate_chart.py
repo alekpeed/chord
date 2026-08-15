@@ -47,6 +47,9 @@ THIRD_FAMILY = {
     "maj": "maj", "maj7": "maj", "dom7": "maj", "maj6": "maj", "aug": "maj",
     "min": "min", "min7": "min", "min6": "min", "dim": "min", "dim7": "min", "hdim7": "min",
     "sus2": "sus", "sus4": "sus",
+    # A power chord claims no third: root credit, never thirds/exact against maj or min truth.
+    # (The truth-side harte SHORTHAND still reads "5" as "maj"; that wart lives in harte.py.)
+    "5": "power",
 }
 
 SEVENTH_TYPE = {
@@ -55,6 +58,7 @@ SEVENTH_TYPE = {
     "dim7": "dim7",
     "maj": "none", "min": "none", "dim": "none", "aug": "none",
     "sus2": "none", "sus4": "none", "maj6": "none", "min6": "none",
+    "5": "none",
 }
 
 
@@ -70,24 +74,50 @@ class Span:
         return self.root is not None and self.quality is not None
 
 
+def sorted_or_warn(spans: list[Span], path: Path) -> list[Span]:
+    """Sorts spans by start; warns on overlap, because predicted_at scores overlapping input
+    by list position and that must never happen silently. Overlaps are not resolved here."""
+    ordered = sorted(spans, key=lambda span: span.start_ms)
+    for before, after in zip(ordered, ordered[1:]):
+        if after.start_ms < before.end_ms:
+            print(f"warning: overlapping spans in {path}; first containing span wins",
+                  file=sys.stderr)
+            break
+    return ordered
+
+
 def read_truth(path: Path) -> tuple[list[Span], int, int]:
     """Reads a .lab file into spans, returning (spans, readable_lines, unreadable_lines)."""
     spans: list[Span] = []
     readable = 0
     unreadable = 0
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.split()
+        stripped = line.strip()
+        # Only blank lines and comments may skip silently; every other malformed line must
+        # count toward MAX_UNREADABLE_FRACTION, or a broken serializer scores plausibly.
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
         if len(parts) < 3:
+            unreadable += 1
             continue
         try:
-            start_ms = int(float(parts[0]) * 1000)
-            end_ms = int(float(parts[1]) * 1000)
+            start_ms = round(float(parts[0]) * 1000)
+            end_ms = round(float(parts[1]) * 1000)
         except ValueError:
+            unreadable += 1
             continue
         if end_ms <= start_ms:
+            unreadable += 1
             continue
         label = " ".join(parts[2:]).strip()
-        if label in {harte.NO_CHORD, "X", "&pause"}:
+        # "X" (Isophonics) marks sounding but unclassifiable harmony — not silence, which is
+        # "N". It is a legitimate annotation, so it reads fine, but it yields no span: the
+        # region is excluded from scoring rather than graded as no-chord.
+        if label == "X":
+            readable += 1
+            continue
+        if label in {harte.NO_CHORD, "&pause"}:
             spans.append(Span(start_ms, end_ms, None, None))
             readable += 1
             continue
@@ -97,7 +127,7 @@ def read_truth(path: Path) -> tuple[list[Span], int, int]:
             continue
         spans.append(Span(start_ms, end_ms, parsed.root, parsed.quality))
         readable += 1
-    return spans, readable, unreadable
+    return sorted_or_warn(spans, path), readable, unreadable
 
 
 def chart_quality(chord: dict) -> str | None:
@@ -114,8 +144,13 @@ def chart_quality(chord: dict) -> str | None:
             return "maj7"
         return "maj6" if sixth else "maj"
     if quality == "MINOR":
-        if seventh in {"MINOR", "MAJOR"}:
+        if seventh == "MINOR":
             return "min7"
+        if seventh == "MAJOR":
+            # min-maj7 has no name in the 13-quality vocabulary; keep the triad claim and
+            # drop the seventh rather than granting a flat-seventh credit the chord never
+            # earned — exactly how DIMINISHED + MAJOR falls through to "dim".
+            return "min"
         return "min6" if sixth else "min"
     if quality == "DIMINISHED":
         if seventh == "DIMINISHED":
@@ -128,7 +163,9 @@ def chart_quality(chord: dict) -> str | None:
     if quality == "AUGMENTED":
         return "aug"
     if quality == "POWER":
-        return "maj"
+        # A power chord claims a root and a fifth, nothing more; "maj" would stake a claim
+        # to a third the chord never made.
+        return "5"
     return None
 
 
@@ -148,7 +185,7 @@ def read_chart(path: Path) -> tuple[list[Span], list[dict]]:
             continue
         pitch = (pitch + int(root.get("alteration", 0))) % 12
         spans.append(Span(event["startMs"], event["endMs"], pitch, chart_quality(chord)))
-    return spans, document.get("beats", [])
+    return sorted_or_warn(spans, path), document.get("beats", [])
 
 
 def predicted_at(spans: list[Span], at_ms: int) -> Span | None:
@@ -224,17 +261,34 @@ def boundary_f(truth: list[Span], predicted: list[Span], tolerance_ms: int) -> t
 
     truth_changes = changes(truth)
     predicted_changes = changes(predicted)
-    if not truth_changes or not predicted_changes:
-        return 0.0, 0.0, 0.0
+    # A one-chord song predicted as one chord is perfect agreement, not a zero — main()
+    # averages per song, so a 0 here would drag corpus scores down for flawless charts.
+    if not truth_changes and not predicted_changes:
+        return 1.0, 1.0, 1.0
+    if not truth_changes:
+        return 0.0, 1.0, 0.0
+    if not predicted_changes:
+        return 1.0, 0.0, 0.0
 
-    found = sum(
-        1 for t in truth_changes if any(abs(p - t) <= tolerance_ms for p in predicted_changes)
-    )
-    used = sum(
-        1 for p in predicted_changes if any(abs(p - t) <= tolerance_ms for t in truth_changes)
-    )
-    recall = found / len(truth_changes)
-    precision = used / len(predicted_changes)
+    # One-to-one greedy nearest matching: a single predicted boundary must never satisfy
+    # two truth boundaries, or vice versa.
+    used_predictions: set[int] = set()
+    matched = 0
+    for t in truth_changes:
+        best_index = None
+        best_distance = tolerance_ms + 1
+        for index, p in enumerate(predicted_changes):
+            if index in used_predictions:
+                continue
+            distance = abs(p - t)
+            if distance <= tolerance_ms and distance < best_distance:
+                best_index = index
+                best_distance = distance
+        if best_index is not None:
+            used_predictions.add(best_index)
+            matched += 1
+    recall = matched / len(truth_changes)
+    precision = matched / len(predicted_changes)
     f_measure = (
         2 * precision * recall / (precision + recall) if precision + recall else 0.0
     )
@@ -250,8 +304,15 @@ def beat_histogram(predicted: list[Span], beats: list[dict]) -> dict[int, int]:
     histogram: dict[int, int] = {}
     if not beats:
         return histogram
-    for span in predicted[1:]:
-        nearest = min(beats, key=lambda beat: abs(beat["timeMs"] - span.start_ms))
+    # Same identity rule as boundary_f: a no-chord row or a same-chord split row is not a
+    # chord start, and counting it would let noise rows shape the histogram.
+    ordered = sorted(predicted, key=lambda span: span.start_ms)
+    for before, after in zip(ordered, ordered[1:]):
+        if not after.is_chord:
+            continue
+        if (before.root, before.quality) == (after.root, after.quality):
+            continue
+        nearest = min(beats, key=lambda beat: abs(beat["timeMs"] - after.start_ms))
         position = nearest.get("beatInMeasure", 0)
         histogram[position] = histogram.get(position, 0) + 1
     return histogram
@@ -285,7 +346,13 @@ def main() -> int:
             histogram[position] = histogram.get(position, 0) + count
 
     total_lines = readable_total + unreadable_total
-    if total_lines and unreadable_total / total_lines > MAX_UNREADABLE_FRACTION:
+    if total_lines == 0:
+        print(
+            "REFUSING TO SCORE: the truth files contained nothing readable at all. That is "
+            "a broken input, not a zero score."
+        )
+        return 1
+    if unreadable_total / total_lines > MAX_UNREADABLE_FRACTION:
         print(
             f"REFUSING TO SCORE: {unreadable_total} of {total_lines} truth labels were "
             "unreadable. That is a broken file or serializer, and scoring around it would "

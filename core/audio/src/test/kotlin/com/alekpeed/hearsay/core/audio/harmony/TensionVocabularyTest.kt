@@ -89,6 +89,55 @@ class TensionVocabularyTest {
     }
 
     @Test
+    fun `a suspended dominant refuses a sharp nine`() {
+        // C-F-G-Bb with a persistent Eb. A sus chord has no major third to alter, so the "#9"
+        // pitch class is simply the minor third and C7sus4#9 is an absurd symbol — the honest
+        // reading of a strong Eb is Cm7. The tension sits below the recognizer's defining-tone
+        // floor so the identity stays suspended; held louder, the Eb rightly flips it to Cm7.
+        val chord = recognizeWith(chordTones = listOf(0, 5, 7, 10), tension = 3, level = 0.35f)
+
+        assertEquals("premise: $chord", ChordQuality.SUSPENDED, chord.quality)
+        assertTrue("7sus4 has no third to sharpen: $chord", Alteration.SHARP_NINE !in chord.alterations)
+    }
+
+    @Test
+    fun `a suspended dominant refuses a sharp eleven`() {
+        // C-F-G-Bb with a persistent F#, a semitone above the structural suspended fourth — the
+        // same avoid-note clash that bans the natural eleventh over a major third.
+        val chord = recognizeWith(chordTones = listOf(0, 5, 7, 10), tension = 6)
+
+        assertEquals("premise: $chord", ChordQuality.SUSPENDED, chord.quality)
+        assertTrue("#11 clashes with the suspended fourth: $chord", Alteration.SHARP_ELEVEN !in chord.alterations)
+    }
+
+    @Test
+    fun `a half-diminished chord refuses a natural nine`() {
+        // B-D-F-A over a held B bass, with a persistent C#. The bass is what names m7b5 here as
+        // in production — without it the upper tones read as the relative D minor triad, so this
+        // test feeds the recognizer directly instead of using the bassless helper. On a
+        // half-diminished chord the plain scale tone is the flat nine; the natural nine is the
+        // exotic locrian-natural-2 color, the same class of misreading as the reported Am7b9.
+        val frames = Array(40) {
+            FloatArray(12).also { values ->
+                for (pc in listOf(11, 2, 5, 9)) values[pc] = 1f
+                values[1] = 0.75f
+            }.let(Chromagram::normalize)
+        }
+        val bassFrames = Array(40) {
+            FloatArray(12).also { values -> values[11] = 1f }
+        }
+        val chord = ChordRecognizer(slashChords = false, extensionPenalty = 1f).recognize(
+            chroma = Chromagram(frames, hopSeconds),
+            beatTimesMs = listOf(0L, 1_000L, 2_000L),
+            bassChroma = Chromagram(bassFrames, hopSeconds),
+        ).first().chord ?: error("Expected a chord")
+
+        assertEquals("premise: $chord", ChordQuality.DIMINISHED, chord.quality)
+        assertEquals("premise: $chord", SeventhType.MINOR, chord.seventh)
+        assertTrue("The diminished family takes no ninth: $chord", 9 !in chord.extensions)
+    }
+
+    @Test
     fun `thirteenths belong to dominants`() {
         val dominant = recognizeWith(chordTones = listOf(0, 4, 7, 10), tension = 9)
         assertTrue("A dominant 13 must be kept: $dominant", 13 in dominant.extensions)
