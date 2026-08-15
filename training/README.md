@@ -1,9 +1,78 @@
 # Training
 
 Everything needed to train a chord recognition model on your own desktop and drop the result
-into the Android app.
+into the Android app — and, first, to measure the recognizer already in it.
 
 This runs on your machine, not the tablet. The tablet only ever loads the finished model.
+
+## Measuring the analyzer you already have
+
+Start here. Until this loop existed, the analyzer's accuracy had never been measured on any
+material at all, and every claim about whether a change helped rested on proxy metrics — how many
+chords per minute, how many carried color, where the changes fell in the bar. Those say a chart is
+*shaped* like a real chart. None of them says a chord is *right*.
+
+The capture apps solve the missing ground truth by construction: they name a chord, print the
+notes, and only write a take whose keys match what was asked for. One command turns that into a
+number.
+
+```bash
+./gradlew :tools:analyzer:installDist                    # once, and after any analyzer change
+
+python3 measure_capture.py \
+    --takes ~/hearsay-capture/takes.jsonl \
+    --out data/measure \
+    --backend fluidsynth \
+    --label "before wiring BassTracker"
+```
+
+It renders the captured MIDI to audio, writes the Harte `.lab` truth beside it, runs the desktop
+analyzer over it, and scores the charts with `evaluate_chart.py`. Everything lands in
+`data/measure`: `audio/`, `charts/`, `scores.json`, and `measurement.json`, which carries the
+scores together with what produced them. Run it before and after a change and the two
+`measurement.json` files are the comparison.
+
+The three steps are also separately usable — `render_takes.py` writes MIDI, audio and `.lab` and
+nothing else, which is what you want when generating training material rather than scoring.
+
+**Backends.** Install a soundfont, once:
+
+```bash
+sudo apt install fluidsynth fluid-soundfont-gm ffmpeg
+```
+
+`--backend auto`, the default, then plays the MIDI through that soundfont. It is the one to
+trust: a General MIDI piano has the overtone structure, attack noise and decay of a real
+instrument, which is what the front end has to survive.
+
+Without a soundfont, `auto` falls back to `--backend synth`, the additive synthesizer in
+`render_takes.py`. It has real harmonics, and it is not the easy case — it is the *harder* one, by
+a lot. On one corpus through one analyzer it scored **3% root accuracy where the soundfont piano
+scored 48%**. A score from it measures the analyzer against a tone generator and says almost
+nothing about a piano. Both the summary and `measurement.json` record which backend actually ran,
+and neither number should ever be quoted without it.
+
+**What this does and does not measure.** Synthesized solo piano has no drums, no bass guitar, no
+vocals, no room and no mix compression, and one chord at a time exercises chord identification
+without exercising the decoder. A good score here does **not** mean the app works on records. A
+bad score localizes the fault immediately, which is worth an afternoon.
+
+**What is excluded, and why it is counted.** Power chords are dropped: Harte's `5` shorthand reads
+back as `maj`, so writing one into a truth file would hand the analyzer a major third the player
+never played. So are takes whose notes never sounded together — an arpeggio has no instant that is
+the chord. Every exclusion is listed by take id in `render-manifest.json` and counted in the
+summary. Nothing disappears quietly.
+
+**How the truth is timed.** A take's truth span runs from its last onset to its first release —
+the window where every note of the chord is sounding at once. A rolled chord is not yet the chord
+during the roll, and it has stopped being the chord after the first key comes up; labeling either
+would credit or penalize the analyzer for a chord that was not there. Time outside a span is
+written nowhere, and the evaluator does not score what the truth file does not cover.
+
+## Training a model on your own recordings
+
+Everything below is the directory's second job: training a new recognizer rather than measuring
+the one that ships. It needs a GPU and music you own.
 
 ## What you need
 
@@ -71,8 +140,10 @@ costs almost nothing.
 ## What "good" looks like
 
 Published systems of this kind reach roughly **80–85%** on major/minor chords across a test set.
-The signal-processing recognizer currently in the app typically lands around **60–70%** on that
-measure — though nobody has measured it on real music yet, which is what `evaluate.py` is for.
+The signal-processing recognizer currently in the app has been assumed to land around **60–70%**
+on that measure. That figure is an assumption, not a measurement: nobody has scored it on real
+music. `measure_capture.py` scores it on synthesized isolated chords and `evaluate.py` scores a
+trained model on held-out songs; neither is a record with drums on it.
 
 Exact-chord accuracy over the full vocabulary (sevenths, sixths, suspensions) is always lower,
 around **65–75%** for good systems. Jazz is harder than pop, and dense mixes are harder than
@@ -100,9 +171,10 @@ class the model guesses at.
 python3 -m unittest discover training/tests
 ```
 
-36 tests, no dependencies beyond numpy. They cover chord-notation parsing, frame alignment and
-the pitch-shift transposition — the three places where a silent mistake would train the model on
-wrong answers without anything ever failing.
+91 tests, no dependencies beyond numpy. They cover chord-notation parsing, frame alignment, the
+pitch-shift transposition, the four scoring tiers, and the capture layout and renderer — the
+places where a silent mistake would produce a confident number, or train the model on wrong
+answers, without anything ever failing.
 
 ## Where this plugs into the app
 

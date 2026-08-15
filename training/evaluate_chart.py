@@ -131,42 +131,13 @@ def read_truth(path: Path) -> tuple[list[Span], int, int]:
 
 
 def chart_quality(chord: dict) -> str | None:
-    """Maps the export's structured components onto the shared 13-quality vocabulary."""
-    quality = chord.get("quality")
-    seventh = chord.get("seventh")
-    sixth = chord.get("sixth", False)
-    suspensions = set(chord.get("suspensions") or [])
+    """Maps the export's structured components onto the shared 13-quality vocabulary.
 
-    if quality == "MAJOR":
-        if seventh == "MINOR":
-            return "dom7"
-        if seventh == "MAJOR":
-            return "maj7"
-        return "maj6" if sixth else "maj"
-    if quality == "MINOR":
-        if seventh == "MINOR":
-            return "min7"
-        if seventh == "MAJOR":
-            # min-maj7 has no name in the 13-quality vocabulary; keep the triad claim and
-            # drop the seventh rather than granting a flat-seventh credit the chord never
-            # earned — exactly how DIMINISHED + MAJOR falls through to "dim".
-            return "min"
-        return "min6" if sixth else "min"
-    if quality == "DIMINISHED":
-        if seventh == "DIMINISHED":
-            return "dim7"
-        if seventh == "MINOR":
-            return "hdim7"
-        return "dim"
-    if quality == "SUSPENDED":
-        return "sus2" if 2 in suspensions and 4 not in suspensions else "sus4"
-    if quality == "AUGMENTED":
-        return "aug"
-    if quality == "POWER":
-        # A power chord claims a root and a fifth, nothing more; "maj" would stake a claim
-        # to a third the chord never made.
-        return "5"
-    return None
+    Lives in `harte` so that the capture corpus, which writes truth labels from the same
+    structured chords, reduces them identically. A second copy here would drift, and the drift
+    would read as an accuracy change nobody made.
+    """
+    return harte.quality_of_structured(chord)
 
 
 def read_chart(path: Path) -> tuple[list[Span], list[dict]]:

@@ -211,6 +211,89 @@ def _quality_of_intervals(semitones: set[int]) -> str | None:
     return None
 
 
+#: What a power chord reduces to. Deliberately outside [QUALITIES]: a power chord claims a root
+#: and a fifth and no third, and there is no class index for "no third". Callers that score
+#: against it treat it as its own third family; callers that write truth labels cannot spell it
+#: in Harte at all, because the shorthand ``5`` reads back as ``maj``.
+POWER = "5"
+
+
+def quality_of_structured(chord: dict) -> str | None:
+    """Reduces the app's structured chord onto the shared vocabulary.
+
+    The input is one ``chord`` object as the app serializes it — ``quality``, ``seventh``,
+    ``sixth``, ``suspensions`` — from either a chart export or a capture take. Both sides of a
+    score go through this one function on purpose: two copies of this mapping would drift, and
+    the drift would show up as an accuracy change nobody made.
+
+    Returns a name from [QUALITIES], or [POWER], or ``None`` when the components do not describe
+    a chord at all.
+    """
+    quality = chord.get("quality")
+    seventh = chord.get("seventh")
+    sixth = chord.get("sixth", False)
+    suspensions = set(chord.get("suspensions") or [])
+
+    if quality == "MAJOR":
+        if seventh == "MINOR":
+            return "dom7"
+        if seventh == "MAJOR":
+            return "maj7"
+        return "maj6" if sixth else "maj"
+    if quality == "MINOR":
+        if seventh == "MINOR":
+            return "min7"
+        if seventh == "MAJOR":
+            # min-maj7 has no name in the 13-quality vocabulary; keep the triad claim and
+            # drop the seventh rather than granting a flat-seventh credit the chord never
+            # earned — exactly how DIMINISHED + MAJOR falls through to "dim".
+            return "min"
+        return "min6" if sixth else "min"
+    if quality == "DIMINISHED":
+        if seventh == "DIMINISHED":
+            return "dim7"
+        if seventh == "MINOR":
+            return "hdim7"
+        return "dim"
+    if quality == "SUSPENDED":
+        return "sus2" if 2 in suspensions and 4 not in suspensions else "sus4"
+    if quality == "AUGMENTED":
+        return "aug"
+    if quality == "POWER":
+        # A power chord claims a root and a fifth, nothing more; "maj" would stake a claim
+        # to a third the chord never made.
+        return POWER
+    return None
+
+
+def spell_note(letter: str, alteration: int) -> str:
+    """Renders a spelled note the way Harte writes one: ``E``, ``Eb``, ``F#``, ``G##``."""
+    if alteration > 0:
+        return letter + "#" * alteration
+    return letter + "b" * -alteration
+
+
+def label_of_structured(chord: dict) -> str | None:
+    """Writes a structured chord as a Harte label, or ``None`` if it cannot be spelled.
+
+    The quality is written in this module's own canonical names rather than in Harte shorthand,
+    so that [parse] reads back exactly what was written. Shorthand would not round-trip: ``9``
+    and ``13`` both mean ``dom7`` on the way in and neither is recoverable on the way out.
+
+    ``None`` means the chord is real but unspellable here — a power chord, whose shorthand ``5``
+    Harte reads as ``maj``. Writing that would hand the chord a major third it never had, and a
+    truth file that lies is worse than one with a gap in it.
+    """
+    quality = quality_of_structured(chord)
+    if quality is None or quality == POWER:
+        return None
+    root = chord.get("root") or {}
+    letter = str(root.get("letter", ""))
+    if letter not in PITCH_CLASSES:
+        return None
+    return f"{spell_note(letter, int(root.get('alteration', 0)))}:{quality}"
+
+
 def transpose_class(class_index: int, semitones: int) -> int:
     """Shifts a class index by [semitones], leaving no-chord alone.
 
