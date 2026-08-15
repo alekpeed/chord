@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.alekpeed.hearsay.core.model.timeline.ChartRow
+import com.alekpeed.hearsay.tools.desktop.capture.CaptureScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -56,11 +57,35 @@ import java.io.File
 /** Dark by default: this is looked at next to a screen showing a recording, usually in a dark room. */
 private val Scheme = darkColorScheme()
 
+/**
+ * Where recorded takes accumulate.
+ *
+ * One file in a fixed place rather than a save dialog per session, because the corpus is built over
+ * many sittings and a take that lands somewhere else is a take that never joins it.
+ */
+private fun captureFile(): java.nio.file.Path =
+    java.nio.file.Paths.get(System.getProperty("user.home"), "hearsay-capture", "takes.jsonl")
+
 /** How often the playing position is re-read. Fast enough that a highlight looks continuous. */
 private const val TickMs = 30L
 
 @Composable
 fun HearsayWindow(initialFile: File?) {
+    var capturing by remember { mutableStateOf(false) }
+
+    Surface(Modifier.fillMaxSize(), color = Scheme.background) {
+        MaterialTheme(colorScheme = Scheme) {
+            if (capturing) {
+                CaptureScreen(outputFile = captureFile(), onExit = { capturing = false })
+            } else {
+                ChartWindow(initialFile) { capturing = true }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChartWindow(initialFile: File?, onCapture: () -> Unit) {
     var song by remember { mutableStateOf<Song?>(null) }
     var phase by remember { mutableStateOf<AnalysisPhase?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
@@ -106,58 +131,58 @@ fun HearsayWindow(initialFile: File?) {
         }
     }
 
-    Surface(Modifier.fillMaxSize(), color = Scheme.background) {
-        MaterialTheme(colorScheme = Scheme) {
-            Column(Modifier.fillMaxSize().padding(16.dp)) {
-                TopBar(
-                    song = song,
-                    profile = profile,
-                    busy = phase != null,
-                    onProfile = { profile = it },
-                    onOpen = { pickFile()?.let(::open) },
-                    onReanalyze = { song?.let { open(it.file) } },
-                    onExport = { song?.let(::exportChart) },
-                )
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        TopBar(
+            song = song,
+            profile = profile,
+            busy = phase != null,
+            onProfile = { profile = it },
+            onOpen = { pickFile()?.let(::open) },
+            onReanalyze = { song?.let { open(it.file) } },
+            onExport = { song?.let(::exportChart) },
+            onCapture = {
+                playback?.stop()
+                onCapture()
+            },
+        )
 
-                Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(12.dp))
 
-                when {
-                    phase != null -> Working(phase!!)
-                    failure != null -> Failure(failure!!)
-                    song == null -> Empty()
-                    else -> ChartPane(
-                        modifier = Modifier.weight(1f),
-                        song = song!!,
-                        positionMs = positionMs,
-                        follow = follow,
-                        onSeek = { ms ->
-                            positionMs = ms
-                            playback?.seek(ms)
-                        },
-                    )
-                }
+        when {
+            phase != null -> Working(phase!!)
+            failure != null -> Failure(failure!!)
+            song == null -> Empty()
+            else -> ChartPane(
+                modifier = Modifier.weight(1f),
+                song = song!!,
+                positionMs = positionMs,
+                follow = follow,
+                onSeek = { ms ->
+                    positionMs = ms
+                    playback?.seek(ms)
+                },
+            )
+        }
 
-                val active = song
-                val transport = playback
-                if (active != null && transport != null) {
-                    Spacer(Modifier.height(12.dp))
-                    Transport(
-                        positionMs = positionMs,
-                        durationMs = transport.durationMs,
-                        playing = playing,
-                        follow = follow,
-                        onToggleFollow = { follow = !follow },
-                        onToggle = {
-                            transport.toggle()
-                            playing = transport.isPlaying
-                        },
-                        onSeek = { ms ->
-                            positionMs = ms
-                            transport.seek(ms)
-                        },
-                    )
-                }
-            }
+        val active = song
+        val transport = playback
+        if (active != null && transport != null) {
+            Spacer(Modifier.height(12.dp))
+            Transport(
+                positionMs = positionMs,
+                durationMs = transport.durationMs,
+                playing = playing,
+                follow = follow,
+                onToggleFollow = { follow = !follow },
+                onToggle = {
+                    transport.toggle()
+                    playing = transport.isPlaying
+                },
+                onSeek = { ms ->
+                    positionMs = ms
+                    transport.seek(ms)
+                },
+            )
         }
     }
 }
@@ -171,9 +196,12 @@ private fun TopBar(
     onOpen: () -> Unit,
     onReanalyze: () -> Unit,
     onExport: () -> Unit,
+    onCapture: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Button(onClick = onOpen, enabled = !busy) { Text("Open a recording") }
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = onCapture, enabled = !busy) { Text("Record chords") }
         Spacer(Modifier.width(8.dp))
 
         var expanded by remember { mutableStateOf(false) }

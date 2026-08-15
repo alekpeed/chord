@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.compose.multiplatform)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 java {
@@ -55,6 +56,10 @@ dependencies {
     implementation(projects.tools.analyzer)
 
     implementation(libs.kotlinx.coroutines.core)
+
+    // Takes are written as one JSON object per line, using the same structured Chord the analysis
+    // uses, so a recorded label and an analyzed chord are the same type on both sides.
+    implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
 }
