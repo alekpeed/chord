@@ -107,6 +107,36 @@ class CurriculumTest {
     }
 
     @Test
+    fun `the prompt spells out the notes, lowest first`() {
+        val cmaj7 = Chord(root = c, seventh = SeventhType.MAJOR)
+
+        val root = CaptureItem("r", Block.INVERSIONS, cmaj7, Voicing.CLOSE, inversion = 0)
+        assertEquals("C E G B", root.notesFromBottom().joinToString(" "))
+
+        // Second inversion: the fifth is underneath and everything rises from it.
+        val second = CaptureItem("s", Block.INVERSIONS, cmaj7, Voicing.CLOSE, inversion = 2)
+        assertEquals("G B C E", second.notesFromBottom().joinToString(" "))
+    }
+
+    @Test
+    fun `a flat-rooted chord is spelled with flats, not sharps`() {
+        val eFlat = NoteSpelling(Letter.E, -1)
+        val item = CaptureItem("f", Block.CORE, Chord(root = eFlat), Voicing.CLOSE)
+        assertEquals("Eb G Bb", item.notesFromBottom().joinToString(" "))
+    }
+
+    @Test
+    fun `every prompt names as many notes as it expects pitch classes`() {
+        for (item in Curriculum.all()) {
+            assertEquals(
+                "${item.id} spells a different number of notes than it requires",
+                item.expectedPitchClasses().size,
+                item.notesFromBottom().size,
+            )
+        }
+    }
+
+    @Test
     fun `the prompt renders a symbol a musician can read`() {
         val item = Curriculum.all().first()
         assertNotNull(item.prompt())

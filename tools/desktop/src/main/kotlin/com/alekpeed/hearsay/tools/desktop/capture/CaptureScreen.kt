@@ -155,6 +155,15 @@ private fun PromptCard(item: CaptureItem) {
             Text(item.block.title, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             Spacer(Modifier.height(12.dp))
             Text(item.prompt(), fontSize = 64.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                item.notesFromBottom().joinToString("  "),
+                fontSize = 34.sp,
+                fontWeight = FontWeight.Medium,
+                color = Sounding,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text("lowest note first", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             Spacer(Modifier.height(16.dp))
             Text(item.detail(), fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))

@@ -79,6 +79,21 @@ data class CaptureItem(
 
     private fun pitchClassOf(interval: Int) = Math.floorMod(label.root.pitchClass + interval, 12)
 
+    /**
+     * The notes to play, lowest first.
+     *
+     * Spelled out rather than left to be worked out from the symbol: the prompt is an instruction,
+     * and an instruction that requires the player to derive a second-inversion m7b5 before their
+     * hands move is a slower session and a worse corpus. Everything after the bass rises from it,
+     * which is the order the hand actually lands in.
+     */
+    fun notesFromBottom(): List<NoteSpelling> {
+        val bass = requiredBassPitchClass()
+        val above = (expectedPitchClasses() - bass).sortedBy { Math.floorMod(it - bass, 12) }
+        val preferFlats = label.root.alteration < 0
+        return (listOf(bass) + above).map { NoteSpelling.fromPitchClass(it, preferFlats) }
+    }
+
     /** What the screen says, in the words a musician would use. */
     fun prompt(): String = ChordFormatter.format(label)
 
