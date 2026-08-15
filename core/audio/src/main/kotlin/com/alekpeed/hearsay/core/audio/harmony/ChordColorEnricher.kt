@@ -135,28 +135,52 @@ internal object ChordColorEnricher {
         return base.copy(extensions = extensions, alterations = alterations).normalized()
     }
 
+    /**
+     * Which tensions a chord family actually takes, before any evidence is weighed.
+     *
+     * The old lists offered nearly every tension on nearly every seventh chord and left the
+     * evidence floors to sort it out. Evidence floors cannot: a sustained melody note or a
+     * neighboring chord's bleed can be genuinely persistent, so the recognizer emitted names like
+     * Am7b9 and Cmaj13b9 — arithmetically defensible, musically absurd, and reported from a real
+     * chart. A flat nine a semitone above a minor chord's root is a sound composers avoid so
+     * consistently that its appearance on a chart is far more likely to be an analysis error than
+     * a performance, and the same is true of a natural eleventh clashing against a major third.
+     *
+     * So the vocabulary is now functional, encoding what players actually voice:
+     *
+     *  - Natural ninths sit on any seventh chord: 9, m9, maj9 are all ordinary.
+     *  - Altered ninths (b9, #9) belong to dominants, where they are the ordinary altered colors.
+     *  - The natural eleventh belongs to minor chords (m11); over a major third it is the textbook
+     *    avoid note, which players resolve by sharpening it or suspending the third.
+     *  - The sharp eleventh belongs to dominants (7#11) and major sevenths (maj7#11, the lydian
+     *    color) — the two places it is genuinely voiced.
+     *  - Thirteenths, natural and flat, belong to dominants. Minor and major thirteenths exist in
+     *    theory and books; on a chart produced from a mixed recording they are overwhelmingly
+     *    misreadings, and a rare true one costs less to under-name than a stream of false ones
+     *    costs to trust.
+     */
     private fun ninthOptions(base: Chord): List<Option> = buildList {
-        add(Option(1, Alteration.FLAT_NINE, AlteredMargin, AlteredPersistence))
         add(Option(2, 9, NinthMargin, NinthPersistence))
-        if (base.quality == ChordQuality.MAJOR || base.quality == ChordQuality.SUSPENDED) {
+        if (base.isDominant) {
+            add(Option(1, Alteration.FLAT_NINE, AlteredMargin, AlteredPersistence))
             add(Option(3, Alteration.SHARP_NINE, AlteredMargin, AlteredPersistence))
         }
     }
 
     private fun eleventhOptions(base: Chord): List<Option> = buildList {
-        if (base.quality != ChordQuality.SUSPENDED || 4 !in base.suspensions) {
+        if (base.quality == ChordQuality.MINOR) {
             add(Option(5, 11, EleventhMargin, EleventhPersistence))
         }
-        if (base.quality != ChordQuality.DIMINISHED) {
+        if (base.isDominant || (base.quality == ChordQuality.MAJOR && base.seventh == SeventhType.MAJOR)) {
             add(Option(6, Alteration.SHARP_ELEVEN, AlteredEleventhMargin, AlteredPersistence))
         }
     }
 
     private fun thirteenthOptions(base: Chord): List<Option> = buildList {
-        if (base.quality != ChordQuality.AUGMENTED) {
+        if (base.isDominant) {
             add(Option(8, Alteration.FLAT_THIRTEEN, AlteredThirteenthMargin, DensePersistence))
+            add(Option(9, 13, ThirteenthMargin, ThirteenthPersistence))
         }
-        add(Option(9, 13, ThirteenthMargin, ThirteenthPersistence))
     }
 
     private fun supported(base: Chord, evidence: Evidence, option: Option, run: Run): Boolean {
