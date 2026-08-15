@@ -63,8 +63,7 @@ private val Scheme = darkColorScheme()
  * One file in a fixed place rather than a save dialog per session, because the corpus is built over
  * many sittings and a take that lands somewhere else is a take that never joins it.
  */
-private fun captureFile(): java.nio.file.Path =
-    java.nio.file.Paths.get(System.getProperty("user.home"), "hearsay-capture", "takes.jsonl")
+private fun captureFile(): File = File(System.getProperty("user.home"), "hearsay-capture/takes.jsonl")
 
 /** How often the playing position is re-read. Fast enough that a highlight looks continuous. */
 private const val TickMs = 30L

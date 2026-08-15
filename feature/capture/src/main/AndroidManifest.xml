@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Declared optional on purpose. A tablet without USB host support still runs everything else
+      the app does; only this one screen is unavailable, and required="true" would hide the whole
+      app from those devices in the store listing.
+    -->
+    <uses-feature android:name="android.software.midi" android:required="false" />
+
+</manifest>

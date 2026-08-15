@@ -1,4 +1,4 @@
-package com.alekpeed.hearsay.tools.desktop.capture
+package com.alekpeed.hearsay.core.capture
 
 import com.alekpeed.hearsay.core.model.music.Chord
 import com.alekpeed.hearsay.core.model.music.Letter
@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.nio.file.Files
 
 /**
@@ -107,7 +108,7 @@ class VerifierTest {
 
     @Test
     fun `an accepted take is written and a rejected one is not`() {
-        val file = Files.createTempDirectory("capture").resolve("takes.jsonl")
+        val file = File(Files.createTempDirectory("capture").toFile(), "takes.jsonl")
         val store = CaptureStore(file)
         val session = CaptureSession(listOf(item()), store)
 
@@ -123,7 +124,7 @@ class VerifierTest {
 
     @Test
     fun `a resumed session does not ask again for what it already has`() {
-        val file = Files.createTempDirectory("capture").resolve("takes.jsonl")
+        val file = File(Files.createTempDirectory("capture").toFile(), "takes.jsonl")
         val store = CaptureStore(file)
         val items = listOf(item(), item().copy(id = "second"))
 
@@ -136,7 +137,7 @@ class VerifierTest {
 
     @Test
     fun `a stored take keeps the notes, so audio can be rendered from it later`() {
-        val file = Files.createTempDirectory("capture").resolve("takes.jsonl")
+        val file = File(Files.createTempDirectory("capture").toFile(), "takes.jsonl")
         val store = CaptureStore(file)
         store.append(item(), attempt(60, 64, 67, 71))
 

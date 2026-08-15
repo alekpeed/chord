@@ -4,6 +4,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Piano
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -61,5 +62,6 @@ internal val TopLevelRoute.icon: ImageVector
         TopLevelRoute.LIBRARY -> Icons.Filled.LibraryMusic
         TopLevelRoute.EAR_TRAINING -> Icons.Filled.Hearing
         TopLevelRoute.PROCESSING -> Icons.Filled.GraphicEq
+        TopLevelRoute.CAPTURE -> Icons.Filled.Piano
         TopLevelRoute.SETTINGS -> Icons.Filled.Settings
     }

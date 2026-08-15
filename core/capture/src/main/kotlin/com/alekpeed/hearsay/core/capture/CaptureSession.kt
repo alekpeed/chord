@@ -1,4 +1,4 @@
-package com.alekpeed.hearsay.tools.desktop.capture
+package com.alekpeed.hearsay.core.capture
 
 /**
  * The order of prompts and what has been answered.

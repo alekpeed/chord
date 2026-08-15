@@ -124,6 +124,7 @@ dependencies {
     implementation(projects.core.media)
     implementation(projects.feature.library)
     implementation(projects.feature.performance)
+    implementation(projects.feature.capture)
     implementation(projects.feature.eartraining)
     implementation(projects.feature.processing)
 

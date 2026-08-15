@@ -1,4 +1,4 @@
-package com.alekpeed.hearsay.tools.desktop.capture
+package com.alekpeed.hearsay.core.capture
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

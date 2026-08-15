@@ -7,6 +7,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.alekpeed.hearsay.feature.capture.ui.CaptureRoute
 import com.alekpeed.hearsay.feature.eartraining.ui.EarTrainingRoute
 import com.alekpeed.hearsay.feature.library.ui.LibraryRoute
 import com.alekpeed.hearsay.feature.performance.PerformanceViewModel
@@ -19,6 +20,7 @@ enum class TopLevelRoute(val route: String, val label: String) {
     LIBRARY("library", "Library"),
     EAR_TRAINING("ear-training", "Ear training"),
     PROCESSING("processing", "Processing"),
+    CAPTURE("capture", "Record chords"),
     SETTINGS("settings", "Settings"),
 }
 
@@ -63,6 +65,7 @@ fun HearsayNavHost(
                 onOpenProject = { projectId -> navController.navigate(Destinations.performance(projectId)) },
             )
         }
+        composable(TopLevelRoute.CAPTURE.route) { CaptureRoute() }
         composable(TopLevelRoute.SETTINGS.route) { SettingsPlaceholderScreen() }
     }
 }

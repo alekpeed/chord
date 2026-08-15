@@ -52,6 +52,7 @@ dependencies {
     // Android dependency, which is the constraint that lets this window exist without a second
     // implementation of the analysis behind it.
     implementation(projects.core.audio)
+    implementation(projects.core.capture)
     implementation(projects.core.model)
     implementation(projects.tools.analyzer)
 

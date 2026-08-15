@@ -1,4 +1,4 @@
-package com.alekpeed.hearsay.tools.desktop.capture
+package com.alekpeed.hearsay.feature.capture.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,23 +39,27 @@ import com.alekpeed.hearsay.core.capture.Curriculum
 import com.alekpeed.hearsay.core.capture.GestureDetector
 import com.alekpeed.hearsay.core.capture.Verdict
 import com.alekpeed.hearsay.core.model.music.NoteSpelling
+import com.alekpeed.hearsay.feature.capture.MidiInput
+import com.alekpeed.hearsay.feature.capture.MidiSource
 import java.io.File
 
 private val Sounding = Color(0xFF4CAF50)
 private val Wrong = Color(0xFFE57373)
 
 /**
- * Recording a labeled corpus by asking for one chord at a time.
+ * Recording a labeled corpus on the tablet, prompt by prompt.
  *
- * The app names what it wants and checks the keys against it, so nothing is labeled by hand and
- * nothing mislabeled can enter the corpus. Wrong notes are not an error state — they are the
- * ordinary case while a hand finds a voicing, so the screen says what is missing and waits.
+ * The same curriculum and the same acceptance rule as the desktop, from :core:capture — a take
+ * recorded on the music stand and one recorded at a computer have to be the same take, or the
+ * corpus is two corpora. Only the MIDI plumbing and this screen are Android's.
  */
 @Composable
-fun CaptureScreen(outputFile: File, onExit: () -> Unit) {
-    val midi = remember { MidiInput() }
-    val store = remember(outputFile) { CaptureStore(outputFile) }
-    val session = remember(outputFile) { CaptureSession(Curriculum.all(), store) }
+fun CaptureRoute(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val midi = remember { MidiInput(context) }
+    val outputFile = remember { File(context.getExternalFilesDir(null), "hearsay-capture/takes.jsonl") }
+    val store = remember { CaptureStore(outputFile) }
+    val session = remember { CaptureSession(Curriculum.all(), store) }
     val detector = remember { GestureDetector() }
 
     var connected by remember { mutableStateOf<MidiSource?>(null) }
@@ -71,21 +76,19 @@ fun CaptureScreen(outputFile: File, onExit: () -> Unit) {
         done = session.done
     }
 
-    fun connect(source: MidiSource) {
-        runCatching {
-            midi.open(source) { pitch, velocity, timeMs ->
-                if (velocity > 0) detector.noteOn(pitch, velocity, timeMs)
-                else detector.noteOff(pitch, timeMs)?.let(::judge)
-                held = detector.held()
-            }
-            connected = source
-            message = null
-        }.onFailure { message = "Could not open that device: ${it.message}" }
-    }
-
-    Column(Modifier.fillMaxSize().padding(24.dp)) {
-        DeviceBar(midi, connected, outputFile, onExit, ::connect)
-        Spacer(Modifier.height(32.dp))
+    Column(modifier.fillMaxSize().padding(24.dp)) {
+        DeviceBar(midi, connected, outputFile) { source ->
+            runCatching {
+                midi.open(source) { pitch, velocity, timeMs ->
+                    if (velocity > 0) detector.noteOn(pitch, velocity, timeMs)
+                    else detector.noteOff(pitch, timeMs)?.let(::judge)
+                    held = detector.held()
+                }
+                connected = source
+                message = null
+            }.onFailure { message = "Could not open that device: ${it.message}" }
+        }
+        Spacer(Modifier.height(24.dp))
 
         val current = item
         if (current == null) {
@@ -94,7 +97,7 @@ fun CaptureScreen(outputFile: File, onExit: () -> Unit) {
         }
 
         PromptCard(current)
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
         Held(held)
         Spacer(Modifier.height(12.dp))
         message?.let { Text(it, color = Wrong, fontSize = 16.sp) }
@@ -112,7 +115,6 @@ private fun DeviceBar(
     midi: MidiInput,
     connected: MidiSource?,
     outputFile: File,
-    onExit: () -> Unit,
     onConnect: (MidiSource) -> Unit,
 ) {
     var sources by remember { mutableStateOf(emptyList<MidiSource>()) }
@@ -143,12 +145,10 @@ private fun DeviceBar(
         }
         Spacer(Modifier.width(16.dp))
         Text(
-            "Saving to $outputFile",
+            "Saving to ${outputFile.absolutePath}",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 12.sp,
+            fontSize = 11.sp,
         )
-        Spacer(Modifier.weight(1f))
-        OutlinedButton(onClick = onExit) { Text("Done") }
     }
 }
 
@@ -158,14 +158,14 @@ private fun PromptCard(item: CaptureItem) {
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
     ) {
-        Column(Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(Modifier.padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(item.block.title, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             Spacer(Modifier.height(12.dp))
-            Text(item.prompt(), fontSize = 64.sp, fontWeight = FontWeight.Bold)
+            Text(item.prompt(), fontSize = 56.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
             Text(
                 item.notesFromBottom().joinToString("  "),
-                fontSize = 34.sp,
+                fontSize = 32.sp,
                 fontWeight = FontWeight.Medium,
                 color = Sounding,
             )
@@ -212,8 +212,11 @@ private fun Progress(done: Int, total: Int, onSkip: () -> Unit) {
 @Composable
 private fun Finished(total: Int, outputFile: File) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Every chord recorded.", fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text("Every chord recorded.", fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Text("$total takes in $outputFile", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "$total takes in ${outputFile.absolutePath}",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
