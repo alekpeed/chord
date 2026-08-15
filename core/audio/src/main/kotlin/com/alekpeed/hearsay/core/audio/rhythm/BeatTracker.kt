@@ -697,9 +697,22 @@ data class TrackedBeat(val frame: Int, val detected: Boolean)
 /**
  * Which beat is beat one.
  *
- * The bar line is chosen by testing every phase against two pieces of evidence: onsets are louder
- * on a downbeat, and harmony is more likely to change there. Chord change carries more weight than
- * loudness, because a drummer's accent can sit anywhere but a chord change lands on a bar.
+ * The bar line is chosen by testing every phase against two pieces of evidence: harmony changes
+ * on a downbeat, and onsets sometimes accent it. Harmony dominates, and not merely by a weight.
+ * The old form summed raw onset energy with 2.5 times the chord-change strength, but the two live
+ * on different scales — onset flux runs several times larger than the 0-to-1 change strength —
+ * so the factor of 2.5 quietly meant "onsets decide." Measured on a real 56 BPM pop recording,
+ * that crowned the snare: the loudest onsets sit on the backbeat, beats two and four, so the
+ * estimator called the snare hits beat one and every chord change in the song landed on the
+ * "wrong" beats. The founding assumption "onsets are louder on a downbeat" is simply false for
+ * backbeat-driven music, which is most of what this app is pointed at — and the synthetic
+ * fixtures never caught it because they politely put their loudest click on the downbeat.
+ *
+ * Each evidence stream is therefore normalized to its own average over the stretch before
+ * weighting, so the weights mean what they say, and harmonic change outvotes accent rather than
+ * the other way around. Accent still breaks ties: when harmony moves every half bar — changes on
+ * one and three alike — the accent pattern is what separates the two, and there it can help
+ * without being able to overrule.
  */
 object DownbeatEstimator {
 
@@ -708,6 +721,9 @@ object DownbeatEstimator {
 
     /** A gap this much wider than the beat spacing is a rest, not a beat the tracker missed. */
     private const val RestFactor = 1.9
+
+    /** Harmonic change against onset accent, after each is normalized to its own mean. */
+    private const val ChangeToAccentWeight = 3f
 
     fun estimate(
         beatFrames: List<Int>,
@@ -719,6 +735,18 @@ object DownbeatEstimator {
     ): Int {
         if (from >= to || beatsPerMeasure <= 1) return 0
 
+        // Normalize each stream over this stretch so the weights compare like with like. A mean
+        // of zero means the stream carries no evidence here and contributes nothing.
+        var onsetTotal = 0f
+        var changeTotal = 0f
+        for (index in from until to) {
+            onsetTotal += envelope.values.getOrElse(beatFrames[index]) { 0f }
+            changeTotal += chordChangeStrength?.getOrElse(index) { 0f } ?: 0f
+        }
+        val count = (to - from).toFloat()
+        val onsetScale = if (onsetTotal > 1e-6f) count / onsetTotal else 0f
+        val changeScale = if (changeTotal > 1e-6f) count / changeTotal else 0f
+
         var bestPhase = 0
         var bestScore = Float.NEGATIVE_INFINITY
 
@@ -726,9 +754,9 @@ object DownbeatEstimator {
             var score = 0f
             for (index in from until to) {
                 if ((index - from - phase).mod(beatsPerMeasure) != 0) continue
-                score += envelope.values.getOrElse(beatFrames[index]) { 0f }
+                score += onsetScale * envelope.values.getOrElse(beatFrames[index]) { 0f }
                 if (chordChangeStrength != null) {
-                    score += 2.5f * chordChangeStrength.getOrElse(index) { 0f }
+                    score += ChangeToAccentWeight * changeScale * chordChangeStrength.getOrElse(index) { 0f }
                 }
             }
             if (score > bestScore) {
